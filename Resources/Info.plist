@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>EagleGridSaver</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.chaopi.EagleGridSaver</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleIconFile</key>
+	<string>EagleGridSaver</string>
+	<key>CFBundleName</key>
+	<string>Eagle Grid Saver</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.7.5</string>
+	<key>CFBundleVersion</key>
+	<string>75</string>
+	<key>NSPrincipalClass</key>
+	<string>EagleGridSaverView</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
