@@ -383,6 +383,27 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
                              kCFPreferencesCurrentHost);
 }
 
+- (void)restartScreenSaverHostProcesses {
+    NSArray<NSString *> *processNames = @[
+        @"legacyScreenSaver",
+        @"ScreenSaverEngine",
+        @"WallpaperAgent",
+        @"cfprefsd"
+    ];
+    for (NSString *processName in processNames) {
+        NSTask *task = NSTask.new;
+        task.launchPath = @"/usr/bin/killall";
+        task.arguments = @[processName];
+        task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+        task.standardError = NSFileHandle.fileHandleWithNullDevice;
+        @try {
+            [task launch];
+            [task waitUntilExit];
+        } @catch (__unused NSException *exception) {
+        }
+    }
+}
+
 - (NSURL *)configuredLibraryURL {
     NSArray<NSUserDefaults *> *defaultsList = @[
         NSUserDefaults.standardUserDefaults,
@@ -569,6 +590,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     self.progressIndicator.hidden = NO;
     self.progressIndicator.doubleValue = 0;
     self.statusLabel.stringValue = @"Building index. Please wait...";
+    [self restartScreenSaverHostProcesses];
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.indexQueue, ^{

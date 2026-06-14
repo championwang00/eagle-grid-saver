@@ -1,0 +1,37 @@
+#!/bin/zsh
+set -euo pipefail
+
+current_user="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [[ -z "$current_user" || "$current_user" == "root" ]]; then
+  exit 0
+fi
+
+home_dir="$(dscl . -read "/Users/$current_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+if [[ -z "$home_dir" || ! -d "$home_dir" ]]; then
+  exit 0
+fi
+
+rm -rf "$home_dir/Library/Screen Savers/EagleGridSaver.saver"
+rm -rf "$home_dir/Applications/Eagle Grid Saver.app"
+
+containers_dir="$home_dir/Library/Containers"
+if [[ -d "$containers_dir" ]]; then
+  for container in "$containers_dir"/com.apple.ScreenSaver.Engine* "$containers_dir"/*legacyScreenSaver*; do
+    [[ -d "$container" ]] || continue
+    rm -rf "$container/Data/Library/Application Support/EagleGridSaver"
+    rm -f "$container/Data/Library/Preferences/com.chaopi.EagleGridSaver.plist"
+    rm -f "$container/Data/Library/Preferences/com.chaopi.EagleGridSaverApp.plist"
+    rm -f "$container/Data/Library/Preferences/ByHost"/com.chaopi.EagleGridSaver*.plist 2>/dev/null || true
+    rm -f "$container/Data/Library/Preferences/ByHost"/com.chaopi.EagleGridSaverApp*.plist 2>/dev/null || true
+  done
+fi
+
+rm -f "$home_dir/Library/Preferences/ByHost"/com.chaopi.EagleGridSaver*.plist 2>/dev/null || true
+rm -f "$home_dir/Library/Preferences/ByHost"/com.chaopi.EagleGridSaverApp*.plist 2>/dev/null || true
+
+killall legacyScreenSaver 2>/dev/null || true
+killall ScreenSaverEngine 2>/dev/null || true
+killall WallpaperAgent 2>/dev/null || true
+killall cfprefsd 2>/dev/null || true
+
+exit 0
