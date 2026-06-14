@@ -66,11 +66,12 @@ static NSInteger const InitialSynchronousCells = 4;
 static NSInteger const NetworkScanAssetLimit = 160;
 static CGFloat const HorizontalGap = 0.0;
 static CGFloat const VerticalGap = 0.0;
-static CGFloat const ScrollSpeed = 0.225;
+static CGFloat const ScrollSpeedAtLegacyFrameRate = 0.225;
+static CGFloat const LegacyFrameRate = 24.0;
 static CGFloat const MinScrollSpeedMultiplier = 0.25;
 static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 static CGFloat const TileCornerRadius = 0.0;
-static CGFloat const TargetFrameRate = 24.0;
+static CGFloat const TargetFrameRate = 60.0;
 static CGFloat const ImageDecodeMaxPixelSize = 1100.0;
 static CGFloat const VideoPosterMaxPixelSize = 900.0;
 static CGFloat const VideoStartupTimeout = 3.0;
@@ -298,7 +299,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
 }
 
 - (CGFloat)effectiveScrollSpeed {
-    return ScrollSpeed * [self scrollSpeedMultiplier];
+    return ScrollSpeedAtLegacyFrameRate * (LegacyFrameRate / TargetFrameRate) * [self scrollSpeedMultiplier];
 }
 
 - (CGFloat)scrollSpeedMultiplier {
@@ -463,13 +464,21 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
 - (void)animateOneFrame {
     self.tick += 1;
     [self rebuildLayoutIfNeeded];
-    self.scrollOffset += [self effectiveScrollSpeed];
+
+    CGFloat frameDelta = [self effectiveScrollSpeed];
+    self.scrollOffset += frameDelta;
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     self.contentLayerRoot.frame = self.bounds;
     self.contentLayerRoot.bounds = self.bounds;
-    self.statusTextLayer.frame = self.bounds;
-    [self advanceWaterfallIfNeeded];
+    if (!self.statusTextLayer.hidden) {
+        self.statusTextLayer.frame = NSInsetRect(self.bounds, 80.0, 0.0);
+    }
+    [self advanceWaterfallByDelta:frameDelta];
+    [CATransaction commit];
+
     [self updateVideoLayers];
-    [self setNeedsDisplay:YES];
 }
 
 - (void)drawRect:(NSRect)rect {
@@ -486,14 +495,29 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         return;
     }
 
-    BOOL drewAnyCell = NO;
+    BOOL hasLayerContent = NO;
     for (EagleCell *cell in self.cells) {
-        drewAnyCell = [self drawFallbackCell:cell] || drewAnyCell;
+        if (cell.contentLayer != nil &&
+            !cell.contentLayer.hidden &&
+            (cell.contentLayer.contents != nil || cell.playerLayer != nil)) {
+            hasLayerContent = YES;
+            break;
+        }
     }
-    if (!drewAnyCell) {
+
+    if (hasLayerContent) {
+        [self updateStatusLayerVisible:NO];
+        return;
+    }
+
+    BOOL drewAnyFallbackCell = NO;
+    for (EagleCell *cell in self.cells) {
+        drewAnyFallbackCell = [self drawFallbackCell:cell] || drewAnyFallbackCell;
+    }
+    if (!drewAnyFallbackCell) {
         self.statusMessage = self.isScanning ? @"Loading Eagle library..." : @"Loading artwork...";
     }
-    [self updateStatusLayerVisible:!drewAnyCell];
+    [self updateStatusLayerVisible:!drewAnyFallbackCell];
 }
 
 - (void)rebuildLayoutIfNeeded {
@@ -1114,7 +1138,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     [CATransaction commit];
 }
 
-- (void)advanceWaterfallIfNeeded {
+- (void)advanceWaterfallByDelta:(CGFloat)delta {
     if (self.artworks.count == 0 || self.cells.count == 0) {
         return;
     }
@@ -1125,7 +1149,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     }
 
     for (EagleCell *cell in self.cells) {
-        cell.frame = NSOffsetRect(cell.frame, 0.0, -[self effectiveScrollSpeed]);
+        cell.frame = NSOffsetRect(cell.frame, 0.0, -delta);
         [self updateLayerFrameForCell:cell];
     }
 
@@ -1185,10 +1209,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     if (cell.contentLayer == nil) {
         return;
     }
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
     cell.contentLayer.frame = [self layerFrameForViewRect:[self bledRectForCellFrame:cell.frame]];
-    [CATransaction commit];
 }
 
 - (void)setLayerImage:(NSImage *)image forCell:(EagleCell *)cell {
