@@ -12,6 +12,7 @@ static NSString * const EagleDisplayCachePathKey = @"EagleGridSaver.displayCache
 static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollSpeedMultiplier";
 static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
 static NSString * const EagleDisplayCacheVersion = @"4";
+static NSString * const AppleScreenSaverDomain = @"com.apple.screensaver";
 static CGFloat const MinScrollSpeedMultiplier = 0.25;
 static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 static NSInteger const MinColumnCount = 1;
@@ -277,6 +278,9 @@ static NSInteger const MaxColumnCount = 6;
         self.statusLabel.stringValue = @"Index is still building. Please wait before starting the screen saver.";
         return;
     }
+    if (![self selectEagleGridSaverModule]) {
+        return;
+    }
 
     NSURL *engineURL = [NSURL fileURLWithPath:@"/System/Library/CoreServices/ScreenSaverEngine.app"];
     NSError *error = nil;
@@ -284,6 +288,49 @@ static NSInteger const MaxColumnCount = 6;
         self.statusLabel.stringValue = @"Could not start ScreenSaverEngine.";
         NSLog(@"EagleGridSaverApp: failed to open %@: %@", engineURL.path, error.localizedDescription);
     }
+}
+
+- (BOOL)selectEagleGridSaverModule {
+    NSURL *saverURL = [self installedSaverURL];
+    if (saverURL == nil) {
+        self.statusLabel.stringValue = @"EagleGridSaver.saver is not installed. Reinstall the package, then open this app again.";
+        return NO;
+    }
+
+    NSDictionary *moduleDict = @{
+        @"moduleName": @"Eagle Grid Saver",
+        @"path": saverURL.path,
+        @"type": @0
+    };
+
+    CFPreferencesSetAppValue(CFSTR("moduleDict"),
+                             (__bridge CFPropertyListRef)moduleDict,
+                             (CFStringRef)AppleScreenSaverDomain);
+    CFPreferencesAppSynchronize((CFStringRef)AppleScreenSaverDomain);
+    CFPreferencesSetValue(CFSTR("moduleDict"),
+                          (__bridge CFPropertyListRef)moduleDict,
+                          (CFStringRef)AppleScreenSaverDomain,
+                          kCFPreferencesCurrentUser,
+                          kCFPreferencesCurrentHost);
+    CFPreferencesSynchronize((CFStringRef)AppleScreenSaverDomain,
+                             kCFPreferencesCurrentUser,
+                             kCFPreferencesCurrentHost);
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Eagle Grid Saver is selected. Screen saver: %@", saverURL.path];
+    return YES;
+}
+
+- (NSURL *)installedSaverURL {
+    NSArray<NSString *> *candidatePaths = @[
+        @"/Library/Screen Savers/EagleGridSaver.saver",
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Screen Savers/EagleGridSaver.saver"]
+    ];
+    for (NSString *path in candidatePaths) {
+        BOOL isDirectory = NO;
+        if ([NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory) {
+            return [NSURL fileURLWithPath:path isDirectory:YES];
+        }
+    }
+    return nil;
 }
 
 - (void)saveValue:(NSString *)path bookmark:(NSData *)bookmark toDefaults:(NSUserDefaults *)defaults {
@@ -1148,6 +1195,7 @@ static NSInteger const MaxColumnCount = 6;
 }
 
 - (void)openScreenSaverSettings:(id)sender {
+    [self selectEagleGridSaverModule];
     NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.ScreenSaver-Settings.extension"];
     [NSWorkspace.sharedWorkspace openURL:url];
 }
@@ -1162,6 +1210,10 @@ int main(int argc, const char * argv[]) {
             NSURL *libraryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[2]]];
             BOOL ok = [delegate buildDisplayCacheForLibrary:libraryURL];
             return ok ? 0 : 1;
+        }
+        if (argc == 2 && strcmp(argv[1], "--select-saver") == 0) {
+            AppDelegate *delegate = AppDelegate.new;
+            return [delegate selectEagleGridSaverModule] ? 0 : 1;
         }
 
         NSApplication *application = NSApplication.sharedApplication;

@@ -7,7 +7,7 @@ OUTPUT_DIR="$PROJECT_DIR/dist"
 PKGROOT="$OUTPUT_DIR/pkgroot"
 COMPONENT_DIR="$OUTPUT_DIR/components"
 SCRIPTS_DIR="$OUTPUT_DIR/scripts"
-PKG_PATH="$OUTPUT_DIR/EagleGridSaver-0.9.4.pkg"
+PKG_PATH="$OUTPUT_DIR/EagleGridSaver-0.9.5.pkg"
 
 cd "$PROJECT_DIR"
 
@@ -30,7 +30,7 @@ pkgbuild \
   --root "$PKGROOT" \
   --scripts "$SCRIPTS_DIR" \
   --identifier "com.chaopi.EagleGridSaver.pkg" \
-  --version "0.9.4" \
+  --version "0.9.5" \
   --install-location "/" \
   "$COMPONENT_DIR/EagleGridSaver-component.pkg"
 
