@@ -9,7 +9,10 @@ static NSString * const EagleDefaultsDomain = @"com.chaopi.EagleGridSaver";
 static NSString * const EagleLibraryPathKey = @"EagleGridSaver.libraryPath";
 static NSString * const EagleLibraryBookmarkKey = @"EagleGridSaver.libraryBookmark";
 static NSString * const EagleDisplayCachePathKey = @"EagleGridSaver.displayCachePath";
+static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollSpeedMultiplier";
 static NSString * const EagleDisplayCacheVersion = @"4";
+static CGFloat const MinScrollSpeedMultiplier = 0.25;
+static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
@@ -17,6 +20,8 @@ static NSString * const EagleDisplayCacheVersion = @"4";
 @property(nonatomic, strong) EagleGridSaverView *previewView;
 @property(nonatomic, strong) NSTextField *pathLabel;
 @property(nonatomic, strong) NSTextField *statusLabel;
+@property(nonatomic, strong) NSTextField *speedLabel;
+@property(nonatomic, strong) NSSlider *speedSlider;
 @property(nonatomic, strong) NSButton *updateIndexButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSButton *startScreenSaverButton;
@@ -53,7 +58,7 @@ static NSString * const EagleDisplayCacheVersion = @"4";
 }
 
 - (void)buildWindow {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 340)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 390)
                                              styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
@@ -63,24 +68,38 @@ static NSString * const EagleDisplayCacheVersion = @"4";
     NSView *content = self.window.contentView;
 
     NSTextField *title = [self labelWithString:@"Eagle Grid Saver" font:[NSFont systemFontOfSize:26 weight:NSFontWeightSemibold] color:NSColor.labelColor];
-    title.frame = NSMakeRect(32, 276, 360, 36);
+    title.frame = NSMakeRect(32, 326, 360, 36);
     [content addSubview:title];
 
     NSTextField *versionLabel = [self labelWithString:[self versionDisplayString] font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
-    versionLabel.frame = NSMakeRect(404, 282, 184, 20);
+    versionLabel.frame = NSMakeRect(404, 332, 184, 20);
     versionLabel.alignment = NSTextAlignmentRight;
     [content addSubview:versionLabel];
 
     NSTextField *description = [self labelWithString:@"Choose an Eagle .library folder. The app prepares a local display cache so the screen saver starts quickly and avoids black tiles." font:[NSFont systemFontOfSize:14 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
-    description.frame = NSMakeRect(32, 224, 556, 44);
+    description.frame = NSMakeRect(32, 274, 556, 44);
     description.maximumNumberOfLines = 2;
     [content addSubview:description];
 
     self.pathLabel = [self labelWithString:@"" font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular] color:NSColor.labelColor];
-    self.pathLabel.frame = NSMakeRect(32, 170, 556, 38);
+    self.pathLabel.frame = NSMakeRect(32, 220, 556, 38);
     self.pathLabel.maximumNumberOfLines = 2;
     self.pathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [content addSubview:self.pathLabel];
+
+    self.speedLabel = [self labelWithString:@"" font:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium] color:NSColor.labelColor];
+    self.speedLabel.frame = NSMakeRect(32, 172, 160, 20);
+    [content addSubview:self.speedLabel];
+
+    self.speedSlider = NSSlider.new;
+    self.speedSlider.frame = NSMakeRect(204, 168, 384, 24);
+    self.speedSlider.minValue = MinScrollSpeedMultiplier;
+    self.speedSlider.maxValue = MaxScrollSpeedMultiplier;
+    self.speedSlider.numberOfTickMarks = 11;
+    self.speedSlider.allowsTickMarkValuesOnly = NO;
+    self.speedSlider.target = self;
+    self.speedSlider.action = @selector(speedChanged:);
+    [content addSubview:self.speedSlider];
 
     NSButton *chooseButton = [NSButton buttonWithTitle:@"Choose Eagle Library..." target:self action:@selector(chooseLibrary:)];
     chooseButton.frame = NSMakeRect(32, 118, 172, 34);
@@ -115,6 +134,7 @@ static NSString * const EagleDisplayCacheVersion = @"4";
     self.statusLabel.frame = NSMakeRect(32, 34, 556, 34);
     self.statusLabel.maximumNumberOfLines = 2;
     [content addSubview:self.statusLabel];
+    [self refreshSpeedControls];
 }
 
 - (NSTextField *)labelWithString:(NSString *)string font:(NSFont *)font color:(NSColor *)color {
@@ -185,6 +205,17 @@ static NSString * const EagleDisplayCacheVersion = @"4";
         return;
     }
     [self prepareIndexForLibrary:libraryURL];
+}
+
+- (void)speedChanged:(NSSlider *)sender {
+    [self saveScrollSpeedMultiplier:sender.doubleValue];
+    [self refreshSpeedControls];
+}
+
+- (void)refreshSpeedControls {
+    CGFloat multiplier = [self scrollSpeedMultiplier];
+    self.speedLabel.stringValue = [NSString stringWithFormat:@"Scroll Speed %.1fx", multiplier];
+    self.speedSlider.doubleValue = multiplier;
 }
 
 - (void)openPreview:(id)sender {
@@ -280,6 +311,59 @@ static NSString * const EagleDisplayCacheVersion = @"4";
     };
 }
 
+- (CGFloat)scrollSpeedMultiplier {
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain],
+        [[NSUserDefaults alloc] initWithSuiteName:EagleDefaultsDomain]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        id value = [defaults objectForKey:EagleScrollSpeedMultiplierKey];
+        if (value != nil) {
+            return [self clampedScrollSpeedMultiplier:[value doubleValue]];
+        }
+    }
+
+    id domainValue = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)EagleScrollSpeedMultiplierKey, (CFStringRef)EagleDefaultsDomain));
+    if (domainValue != nil) {
+        return [self clampedScrollSpeedMultiplier:[domainValue doubleValue]];
+    }
+
+    return 1.0;
+}
+
+- (CGFloat)clampedScrollSpeedMultiplier:(CGFloat)value {
+    if (!isfinite(value) || value <= 0.0) {
+        return 1.0;
+    }
+    return MIN(MaxScrollSpeedMultiplier, MAX(MinScrollSpeedMultiplier, value));
+}
+
+- (void)saveScrollSpeedMultiplier:(CGFloat)multiplier {
+    NSNumber *value = @([self clampedScrollSpeedMultiplier:multiplier]);
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain],
+        [[NSUserDefaults alloc] initWithSuiteName:EagleDefaultsDomain]
+    ];
+    for (NSUserDefaults *defaults in defaultsList) {
+        [defaults setObject:value forKey:EagleScrollSpeedMultiplierKey];
+        [defaults synchronize];
+    }
+    CFPreferencesSetAppValue((CFStringRef)EagleScrollSpeedMultiplierKey, (__bridge CFNumberRef)value, (CFStringRef)EagleDefaultsDomain);
+    CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+    [self saveContainerPreferenceValue:value forKey:EagleScrollSpeedMultiplierKey];
+}
+
+- (void)saveContainerPreferenceValue:(id)value forKey:(NSString *)key {
+    NSURL *containerPreferencesURL = [self legacyScreenSaverContainerPreferencesURL];
+    NSMutableDictionary *containerPreferences = [NSMutableDictionary dictionaryWithContentsOfURL:containerPreferencesURL] ?: NSMutableDictionary.dictionary;
+    containerPreferences[key] = value;
+    [NSFileManager.defaultManager createDirectoryAtURL:containerPreferencesURL.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    [containerPreferences writeToURL:containerPreferencesURL atomically:YES];
+}
+
 - (NSURL *)configuredLibraryURL {
     NSArray<NSUserDefaults *> *defaultsList = @[
         NSUserDefaults.standardUserDefaults,
@@ -348,6 +432,18 @@ static NSString * const EagleDisplayCacheVersion = @"4";
     NSURL *folderURL = [[self applicationSupportFolderURL] URLByAppendingPathComponent:@"DisplayCache" isDirectory:YES];
     [NSFileManager.defaultManager createDirectoryAtURL:folderURL withIntermediateDirectories:YES attributes:nil error:nil];
     return folderURL;
+}
+
+- (NSURL *)legacyScreenSaverContainerDisplayCacheFolderURL {
+    NSURL *homeURL = NSFileManager.defaultManager.homeDirectoryForCurrentUser;
+    NSURL *folderURL = [homeURL URLByAppendingPathComponent:@"Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Application Support/EagleGridSaver/DisplayCache" isDirectory:YES];
+    [NSFileManager.defaultManager createDirectoryAtURL:folderURL withIntermediateDirectories:YES attributes:nil error:nil];
+    return folderURL;
+}
+
+- (NSURL *)legacyScreenSaverContainerPreferencesURL {
+    NSURL *homeURL = NSFileManager.defaultManager.homeDirectoryForCurrentUser;
+    return [homeURL URLByAppendingPathComponent:@"Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Preferences/com.chaopi.EagleGridSaver.plist"];
 }
 
 - (void)prepareIndexForLibrary:(NSURL *)libraryURL {
@@ -547,18 +643,76 @@ static NSString * const EagleDisplayCacheVersion = @"4";
     CFPreferencesSetAppValue((CFStringRef)EagleDisplayCachePathKey, (__bridge CFStringRef)cacheURL.path, (CFStringRef)EagleDefaultsDomain);
     CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
 
+    NSURL *containerCacheURL = [self legacyScreenSaverContainerDisplayCacheFolderURL];
+    BOOL mirrored = [self mirrorDisplayCacheFromFolder:cacheURL toFolder:containerCacheURL keepingItems:items];
+    if (mirrored) {
+        NSURL *containerPreferencesURL = [self legacyScreenSaverContainerPreferencesURL];
+        NSMutableDictionary *containerPreferences = [NSMutableDictionary dictionaryWithContentsOfURL:containerPreferencesURL] ?: NSMutableDictionary.dictionary;
+        containerPreferences[EagleLibraryPathKey] = libraryURL.path ?: @"";
+        containerPreferences[EagleDisplayCachePathKey] = containerCacheURL.path ?: @"";
+        containerPreferences[EagleScrollSpeedMultiplierKey] = @([self scrollSpeedMultiplier]);
+        [NSFileManager.defaultManager createDirectoryAtURL:containerPreferencesURL.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        [containerPreferences writeToURL:containerPreferencesURL atomically:YES];
+    }
+
     self.lastPreparedCount = succeeded;
     self.lastVideoCount = videoSucceeded;
     self.lastSkippedCount = failed;
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.statusLabel.stringValue = [NSString stringWithFormat:@"Ready. Index has %lu items (%lu videos), skipped %lu. Cache: %@",
+        self.statusLabel.stringValue = [NSString stringWithFormat:@"Ready. Index has %lu items (%lu videos), skipped %lu. Cache: %@%@",
                                         (unsigned long)succeeded,
                                         (unsigned long)videoSucceeded,
                                         (unsigned long)failed,
-                                        cacheURL.path];
+                                        cacheURL.path,
+                                        mirrored ? @" (screen saver cache ready)" : @" (screen saver cache mirror failed)"];
     });
     return succeeded > 0;
+}
+
+- (BOOL)mirrorDisplayCacheFromFolder:(NSURL *)sourceFolderURL toFolder:(NSURL *)targetFolderURL keepingItems:(NSArray<NSDictionary *> *)items {
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    if (![fileManager createDirectoryAtURL:targetFolderURL withIntermediateDirectories:YES attributes:nil error:nil]) {
+        return NO;
+    }
+
+    [self removeStaleCacheFilesInFolder:targetFolderURL keepingItems:items];
+
+    NSMutableArray<NSString *> *names = NSMutableArray.array;
+    [names addObject:@"manifest.json"];
+    for (NSDictionary *item in items) {
+        NSString *cachePath = [item[@"cachePath"] isKindOfClass:NSString.class] ? item[@"cachePath"] : nil;
+        if (cachePath.length > 0) {
+            [names addObject:cachePath.lastPathComponent];
+        }
+    }
+
+    BOOL allOK = YES;
+    for (NSString *name in names) {
+        NSURL *sourceURL = [sourceFolderURL URLByAppendingPathComponent:name];
+        NSURL *targetURL = [targetFolderURL URLByAppendingPathComponent:name];
+        if (![fileManager fileExistsAtPath:sourceURL.path]) {
+            allOK = NO;
+            continue;
+        }
+
+        [fileManager removeItemAtURL:targetURL error:nil];
+        NSError *linkError = nil;
+        if ([fileManager linkItemAtURL:sourceURL toURL:targetURL error:&linkError]) {
+            continue;
+        }
+
+        NSError *copyError = nil;
+        if (![fileManager copyItemAtURL:sourceURL toURL:targetURL error:&copyError]) {
+            NSLog(@"EagleGridSaverApp: failed to mirror cache file %@: link=%@ copy=%@",
+                  name,
+                  linkError.localizedDescription,
+                  copyError.localizedDescription);
+            allOK = NO;
+        }
+    }
+
+    return allOK;
 }
 
 - (void)removeStaleCacheFilesInFolder:(NSURL *)cacheURL keepingItems:(NSArray<NSDictionary *> *)items {

@@ -6,7 +6,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_DIR="$PROJECT_DIR/dist"
 PKGROOT="$OUTPUT_DIR/pkgroot"
 COMPONENT_DIR="$OUTPUT_DIR/components"
-PKG_PATH="$OUTPUT_DIR/EagleGridSaver-0.8.1.pkg"
+PKG_PATH="$OUTPUT_DIR/EagleGridSaver-0.8.7.pkg"
 
 cd "$PROJECT_DIR"
 
@@ -25,7 +25,7 @@ xattr -cr "$PKGROOT"
 pkgbuild \
   --root "$PKGROOT" \
   --identifier "com.chaopi.EagleGridSaver.pkg" \
-  --version "0.8.1" \
+  --version "0.8.7" \
   --install-location "/" \
   "$COMPONENT_DIR/EagleGridSaver-component.pkg"
 
