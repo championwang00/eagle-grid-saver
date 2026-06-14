@@ -192,6 +192,10 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     CFPreferencesSetAppValue((CFStringRef)EagleLibraryPathKey, (__bridge CFStringRef)url.path, (CFStringRef)EagleDefaultsDomain);
     CFPreferencesSetAppValue((CFStringRef)EagleLibraryBookmarkKey, (__bridge CFDataRef)bookmark, (CFStringRef)EagleDefaultsDomain);
     CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+    [self saveCurrentHostPreferenceValue:url.path forKey:EagleLibraryPathKey];
+    [self saveCurrentHostPreferenceValue:bookmark forKey:EagleLibraryBookmarkKey];
+    [self saveContainerPreferenceValue:url.path forKey:EagleLibraryPathKey];
+    [self saveContainerPreferenceValue:bookmark forKey:EagleLibraryBookmarkKey];
 
     self.statusLabel.stringValue = @"Preparing library. Please wait...";
     [self refreshPathLabel];
@@ -353,6 +357,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     }
     CFPreferencesSetAppValue((CFStringRef)EagleScrollSpeedMultiplierKey, (__bridge CFNumberRef)value, (CFStringRef)EagleDefaultsDomain);
     CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+    [self saveCurrentHostPreferenceValue:value forKey:EagleScrollSpeedMultiplierKey];
     [self saveContainerPreferenceValue:value forKey:EagleScrollSpeedMultiplierKey];
     [self writeRuntimeConfigWithSpeedMultiplier:value];
 }
@@ -365,6 +370,17 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
         [NSFileManager.defaultManager createDirectoryAtURL:containerPreferencesURL.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         [containerPreferences writeToURL:containerPreferencesURL atomically:YES];
     }
+}
+
+- (void)saveCurrentHostPreferenceValue:(id)value forKey:(NSString *)key {
+    CFPreferencesSetValue((CFStringRef)key,
+                          (__bridge CFPropertyListRef)value,
+                          (CFStringRef)EagleDefaultsDomain,
+                          kCFPreferencesCurrentUser,
+                          kCFPreferencesCurrentHost);
+    CFPreferencesSynchronize((CFStringRef)EagleDefaultsDomain,
+                             kCFPreferencesCurrentUser,
+                             kCFPreferencesCurrentHost);
 }
 
 - (NSURL *)configuredLibraryURL {
@@ -507,6 +523,28 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 
 - (NSURL *)preferencesURLForScreenSaverContainerRootURL:(NSURL *)containerRootURL {
     return [containerRootURL URLByAppendingPathComponent:@"Data/Library/Preferences/com.chaopi.EagleGridSaver.plist"];
+}
+
+- (void)clearStaleScreenSaverStateForContainerRootURL:(NSURL *)containerRootURL {
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSURL *supportURL = [containerRootURL URLByAppendingPathComponent:@"Data/Library/Application Support/EagleGridSaver" isDirectory:YES];
+    [fileManager removeItemAtURL:supportURL error:nil];
+
+    NSURL *preferencesURL = [self preferencesURLForScreenSaverContainerRootURL:containerRootURL];
+    [fileManager removeItemAtURL:preferencesURL error:nil];
+
+    NSURL *byHostURL = [containerRootURL URLByAppendingPathComponent:@"Data/Library/Preferences/ByHost" isDirectory:YES];
+    NSArray<NSURL *> *preferenceFiles = [fileManager contentsOfDirectoryAtURL:byHostURL
+                                                   includingPropertiesForKeys:nil
+                                                                      options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                                        error:nil];
+    for (NSURL *preferenceURL in preferenceFiles) {
+        NSString *name = preferenceURL.lastPathComponent;
+        if ([name hasPrefix:@"com.chaopi.EagleGridSaver."] ||
+            [name hasPrefix:@"com.chaopi.EagleGridSaverApp."]) {
+            [fileManager removeItemAtURL:preferenceURL error:nil];
+        }
+    }
 }
 
 - (void)prepareIndexForLibrary:(NSURL *)libraryURL {
@@ -708,9 +746,16 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     [screenSaverDefaults synchronize];
     CFPreferencesSetAppValue((CFStringRef)EagleDisplayCachePathKey, (__bridge CFStringRef)cacheURL.path, (CFStringRef)EagleDefaultsDomain);
     CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+    [self saveCurrentHostPreferenceValue:libraryURL.path ?: @"" forKey:EagleLibraryPathKey];
+    [self saveCurrentHostPreferenceValue:cacheURL.path ?: @"" forKey:EagleDisplayCachePathKey];
+    [self saveCurrentHostPreferenceValue:speedMultiplier forKey:EagleScrollSpeedMultiplierKey];
 
     NSUInteger mirroredContainerCount = 0;
     for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
+        NSURL *containerPreferencesURL = [self preferencesURLForScreenSaverContainerRootURL:containerRootURL];
+        NSDictionary *oldContainerPreferences = [NSDictionary dictionaryWithContentsOfURL:containerPreferencesURL];
+        NSData *libraryBookmark = [oldContainerPreferences[EagleLibraryBookmarkKey] isKindOfClass:NSData.class] ? oldContainerPreferences[EagleLibraryBookmarkKey] : nil;
+        [self clearStaleScreenSaverStateForContainerRootURL:containerRootURL];
         NSURL *containerCacheURL = [self displayCacheFolderURLForScreenSaverContainerRootURL:containerRootURL];
         BOOL mirrored = [self mirrorDisplayCacheFromFolder:cacheURL toFolder:containerCacheURL keepingItems:items];
         if (!mirrored) {
@@ -718,11 +763,13 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
         }
 
         mirroredContainerCount += 1;
-        NSURL *containerPreferencesURL = [self preferencesURLForScreenSaverContainerRootURL:containerRootURL];
         NSMutableDictionary *containerPreferences = [NSMutableDictionary dictionaryWithContentsOfURL:containerPreferencesURL] ?: NSMutableDictionary.dictionary;
         containerPreferences[EagleLibraryPathKey] = libraryURL.path ?: @"";
         containerPreferences[EagleDisplayCachePathKey] = containerCacheURL.path ?: @"";
         containerPreferences[EagleScrollSpeedMultiplierKey] = speedMultiplier;
+        if (libraryBookmark != nil) {
+            containerPreferences[EagleLibraryBookmarkKey] = libraryBookmark;
+        }
         [NSFileManager.defaultManager createDirectoryAtURL:containerPreferencesURL.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         [containerPreferences writeToURL:containerPreferencesURL atomically:YES];
     }

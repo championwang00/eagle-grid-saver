@@ -28,6 +28,16 @@ int main(int argc, const char * argv[]) {
                 printf("candidateLibraryPath=%s\n", path.UTF8String);
             }
         }
+        if ([view respondsToSelector:NSSelectorFromString(@"configuredDisplayCacheFolderURL")]) {
+            NSURL *cacheURL = [view performSelector:NSSelectorFromString(@"configuredDisplayCacheFolderURL")];
+            printf("configuredDisplayCacheFolderURL=%s\n", cacheURL.path.UTF8String ?: "(nil)");
+        }
+        if ([view respondsToSelector:NSSelectorFromString(@"displayCacheManifestURL")]) {
+            NSURL *manifestURL = [view performSelector:NSSelectorFromString(@"displayCacheManifestURL")];
+            printf("displayCacheManifestURL=%s exists=%s\n",
+                   manifestURL.path.UTF8String ?: "(nil)",
+                   (manifestURL != nil && [NSFileManager.defaultManager fileExistsAtPath:manifestURL.path]) ? "yes" : "no");
+        }
         if ([view respondsToSelector:NSSelectorFromString(@"scrollSpeedMultiplier")]) {
             double (*sendDouble)(id, SEL) = (double (*)(id, SEL))objc_msgSend;
             double speed = sendDouble(view, NSSelectorFromString(@"scrollSpeedMultiplier"));
