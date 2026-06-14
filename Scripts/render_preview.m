@@ -24,7 +24,8 @@ int main(int argc, const char * argv[]) {
         }
 
         NSRect frame = NSMakeRect(0, 0, 1440, 900);
-        ScreenSaverView *view = [[principalClass alloc] initWithFrame:frame isPreview:YES];
+        BOOL isPreview = argc < 5 || strcmp(argv[4], "full") != 0;
+        ScreenSaverView *view = [[principalClass alloc] initWithFrame:frame isPreview:isPreview];
         if (view == nil) {
             fprintf(stderr, "failed to create saver view\n");
             return 1;

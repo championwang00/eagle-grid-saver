@@ -1,13 +1,15 @@
 #import <Cocoa/Cocoa.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ImageIO/ImageIO.h>
+#import <IOKit/pwr_mgt/IOPMLib.h>
 #import <ScreenSaver/ScreenSaver.h>
 #import "../EagleGridSaverObjC/EagleGridSaverView.h"
 
 static NSString * const EagleDefaultsDomain = @"com.chaopi.EagleGridSaver";
 static NSString * const EagleLibraryPathKey = @"EagleGridSaver.libraryPath";
 static NSString * const EagleLibraryBookmarkKey = @"EagleGridSaver.libraryBookmark";
-static NSString * const EagleDisplayCacheVersion = @"2";
+static NSString * const EagleDisplayCachePathKey = @"EagleGridSaver.displayCachePath";
+static NSString * const EagleDisplayCacheVersion = @"4";
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
@@ -16,9 +18,16 @@ static NSString * const EagleDisplayCacheVersion = @"2";
 @property(nonatomic, strong) NSTextField *pathLabel;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSButton *updateIndexButton;
+@property(nonatomic, strong) NSButton *settingsButton;
+@property(nonatomic, strong) NSButton *startScreenSaverButton;
 @property(nonatomic, strong) NSProgressIndicator *progressIndicator;
+@property(nonatomic, strong) id indexingActivity;
+@property(nonatomic) IOPMAssertionID displaySleepAssertionID;
 @property(nonatomic) dispatch_queue_t indexQueue;
 @property(nonatomic) BOOL isPreparingIndex;
+@property(nonatomic) NSUInteger lastPreparedCount;
+@property(nonatomic) NSUInteger lastVideoCount;
+@property(nonatomic) NSUInteger lastSkippedCount;
 @end
 
 @implementation AppDelegate
@@ -36,6 +45,13 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     return YES;
 }
 
+- (NSString *)versionDisplayString {
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    NSString *version = [info[@"CFBundleShortVersionString"] isKindOfClass:NSString.class] ? info[@"CFBundleShortVersionString"] : @"?";
+    NSString *build = [info[@"CFBundleVersion"] isKindOfClass:NSString.class] ? info[@"CFBundleVersion"] : @"?";
+    return [NSString stringWithFormat:@"Version %@ (%@)", version, build];
+}
+
 - (void)buildWindow {
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 340)
                                              styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)
@@ -47,8 +63,13 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     NSView *content = self.window.contentView;
 
     NSTextField *title = [self labelWithString:@"Eagle Grid Saver" font:[NSFont systemFontOfSize:26 weight:NSFontWeightSemibold] color:NSColor.labelColor];
-    title.frame = NSMakeRect(32, 276, 556, 36);
+    title.frame = NSMakeRect(32, 276, 360, 36);
     [content addSubview:title];
+
+    NSTextField *versionLabel = [self labelWithString:[self versionDisplayString] font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
+    versionLabel.frame = NSMakeRect(404, 282, 184, 20);
+    versionLabel.alignment = NSTextAlignmentRight;
+    [content addSubview:versionLabel];
 
     NSTextField *description = [self labelWithString:@"Choose an Eagle .library folder. The app prepares a local display cache so the screen saver starts quickly and avoids black tiles." font:[NSFont systemFontOfSize:14 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
     description.frame = NSMakeRect(32, 224, 556, 44);
@@ -71,15 +92,15 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     self.updateIndexButton.bezelStyle = NSBezelStyleRounded;
     [content addSubview:self.updateIndexButton];
 
-    NSButton *settingsButton = [NSButton buttonWithTitle:@"Settings" target:self action:@selector(openScreenSaverSettings:)];
-    settingsButton.frame = NSMakeRect(344, 118, 92, 34);
-    settingsButton.bezelStyle = NSBezelStyleRounded;
-    [content addSubview:settingsButton];
+    self.settingsButton = [NSButton buttonWithTitle:@"Settings" target:self action:@selector(openScreenSaverSettings:)];
+    self.settingsButton.frame = NSMakeRect(344, 118, 92, 34);
+    self.settingsButton.bezelStyle = NSBezelStyleRounded;
+    [content addSubview:self.settingsButton];
 
-    NSButton *startButton = [NSButton buttonWithTitle:@"Start Screen Saver" target:self action:@selector(startScreenSaver:)];
-    startButton.frame = NSMakeRect(448, 118, 150, 34);
-    startButton.bezelStyle = NSBezelStyleRounded;
-    [content addSubview:startButton];
+    self.startScreenSaverButton = [NSButton buttonWithTitle:@"Start Screen Saver" target:self action:@selector(startScreenSaver:)];
+    self.startScreenSaverButton.frame = NSMakeRect(448, 118, 150, 34);
+    self.startScreenSaverButton.bezelStyle = NSBezelStyleRounded;
+    [content addSubview:self.startScreenSaverButton];
 
     self.progressIndicator = NSProgressIndicator.new;
     self.progressIndicator.frame = NSMakeRect(32, 82, 480, 16);
@@ -188,6 +209,11 @@ static NSString * const EagleDisplayCacheVersion = @"2";
 }
 
 - (void)startScreenSaver:(id)sender {
+    if (self.isPreparingIndex) {
+        self.statusLabel.stringValue = @"Index is still building. Please wait before starting the screen saver.";
+        return;
+    }
+
     NSURL *engineURL = [NSURL fileURLWithPath:@"/System/Library/CoreServices/ScreenSaverEngine.app"];
     NSError *error = nil;
     if (![NSWorkspace.sharedWorkspace openURL:engineURL]) {
@@ -208,12 +234,50 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     if (path.length > 0) {
         self.pathLabel.stringValue = path;
         if (!self.isPreparingIndex) {
-            self.statusLabel.stringValue = @"Ready. You can close this app. Use Update Index after adding or changing Eagle assets.";
+            NSDictionary *summary = [self displayCacheSummary];
+            NSNumber *count = summary[@"count"];
+            NSNumber *videos = summary[@"videos"];
+            if (count != nil && count.unsignedIntegerValue > 0) {
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"Ready. Index has %lu items (%lu videos). Cache: %@",
+                                                (unsigned long)count.unsignedIntegerValue,
+                                                (unsigned long)videos.unsignedIntegerValue,
+                                                self.displayCacheFolderURL.path];
+            } else {
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"No usable index yet. Click Update Index. Cache: %@",
+                                                self.displayCacheFolderURL.path];
+            }
         }
     } else {
         self.pathLabel.stringValue = @"No Eagle library selected";
         self.statusLabel.stringValue = @"Choose an Eagle library to prepare the display cache.";
     }
+}
+
+- (NSDictionary *)displayCacheSummary {
+    NSURL *manifestURL = [[self displayCacheFolderURL] URLByAppendingPathComponent:@"manifest.json"];
+    NSData *data = [NSData dataWithContentsOfURL:manifestURL];
+    if (data == nil) {
+        return @{};
+    }
+
+    NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![manifest isKindOfClass:NSDictionary.class]) {
+        return @{};
+    }
+
+    NSArray *items = [manifest[@"items"] isKindOfClass:NSArray.class] ? manifest[@"items"] : nil;
+    NSUInteger videoCount = 0;
+    for (NSDictionary *item in items) {
+        if ([item isKindOfClass:NSDictionary.class] && [item[@"isVideo"] boolValue]) {
+            videoCount += 1;
+        }
+    }
+
+    return @{
+        @"count": @(items.count),
+        @"videos": @(videoCount),
+        @"libraryPath": [manifest[@"libraryPath"] isKindOfClass:NSString.class] ? manifest[@"libraryPath"] : @""
+    };
 }
 
 - (NSURL *)configuredLibraryURL {
@@ -292,7 +356,19 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     }
 
     self.isPreparingIndex = YES;
+    self.indexingActivity = [NSProcessInfo.processInfo beginActivityWithOptions:(NSActivityUserInitiated | NSActivityIdleDisplaySleepDisabled)
+                                                                         reason:@"Eagle Grid Saver is building its display index"];
+    self.displaySleepAssertionID = kIOPMNullAssertionID;
+    IOReturn assertionResult = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep,
+                                                           kIOPMAssertionLevelOn,
+                                                           CFSTR("Eagle Grid Saver is building its display index"),
+                                                           &_displaySleepAssertionID);
+    if (assertionResult != kIOReturnSuccess) {
+        NSLog(@"EagleGridSaverApp: failed to prevent idle display sleep while indexing: %d", assertionResult);
+    }
     self.updateIndexButton.enabled = NO;
+    self.settingsButton.enabled = NO;
+    self.startScreenSaverButton.enabled = NO;
     self.progressIndicator.hidden = NO;
     self.progressIndicator.doubleValue = 0;
     self.statusLabel.stringValue = @"Building index. Please wait...";
@@ -313,6 +389,16 @@ static NSString * const EagleDisplayCacheVersion = @"2";
             }
             innerSelf.isPreparingIndex = NO;
             innerSelf.updateIndexButton.enabled = YES;
+            innerSelf.settingsButton.enabled = YES;
+            innerSelf.startScreenSaverButton.enabled = YES;
+            if (innerSelf.indexingActivity != nil) {
+                [NSProcessInfo.processInfo endActivity:innerSelf.indexingActivity];
+                innerSelf.indexingActivity = nil;
+            }
+            if (innerSelf.displaySleepAssertionID != kIOPMNullAssertionID) {
+                IOPMAssertionRelease(innerSelf.displaySleepAssertionID);
+                innerSelf.displaySleepAssertionID = kIOPMNullAssertionID;
+            }
             if (prepared) {
                 innerSelf.progressIndicator.doubleValue = 1;
             }
@@ -364,6 +450,7 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     __block NSUInteger processed = 0;
     __block NSUInteger succeeded = 0;
     __block NSUInteger failed = 0;
+    __block NSUInteger videoSucceeded = 0;
 
     if (mediaFiles.count == 0) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -400,6 +487,9 @@ static NSString * const EagleDisplayCacheVersion = @"2";
 
             if (ok) {
                 succeeded += 1;
+                if (isVideo) {
+                    videoSucceeded += 1;
+                }
                 NSString *title = [metadata[@"name"] isKindOfClass:NSString.class] ? metadata[@"name"] : fileURL.URLByDeletingPathExtension.lastPathComponent;
                 [items addObject:@{
                     @"cachePath": cacheName,
@@ -438,12 +528,35 @@ static NSString * const EagleDisplayCacheVersion = @"2";
         @"items": items
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:manifest options:0 error:nil];
-    [data writeToURL:[cacheURL URLByAppendingPathComponent:@"manifest.json"] atomically:YES];
+    NSURL *manifestURL = [cacheURL URLByAppendingPathComponent:@"manifest.json"];
+    BOOL wroteManifest = [data writeToURL:manifestURL atomically:YES];
+    if (!wroteManifest) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.statusLabel.stringValue = [NSString stringWithFormat:@"Index build failed. Could not write manifest: %@",
+                                            manifestURL.path];
+        });
+        return NO;
+    }
+
+    NSUserDefaults *standardDefaults = NSUserDefaults.standardUserDefaults;
+    [standardDefaults setObject:cacheURL.path forKey:EagleDisplayCachePathKey];
+    [standardDefaults synchronize];
+    ScreenSaverDefaults *screenSaverDefaults = [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain];
+    [screenSaverDefaults setObject:cacheURL.path forKey:EagleDisplayCachePathKey];
+    [screenSaverDefaults synchronize];
+    CFPreferencesSetAppValue((CFStringRef)EagleDisplayCachePathKey, (__bridge CFStringRef)cacheURL.path, (CFStringRef)EagleDefaultsDomain);
+    CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+
+    self.lastPreparedCount = succeeded;
+    self.lastVideoCount = videoSucceeded;
+    self.lastSkippedCount = failed;
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.statusLabel.stringValue = [NSString stringWithFormat:@"Ready. Prepared %lu items, skipped %lu. You can close this app.",
+        self.statusLabel.stringValue = [NSString stringWithFormat:@"Ready. Index has %lu items (%lu videos), skipped %lu. Cache: %@",
                                         (unsigned long)succeeded,
-                                        (unsigned long)failed];
+                                        (unsigned long)videoSucceeded,
+                                        (unsigned long)failed,
+                                        cacheURL.path];
     });
     return succeeded > 0;
 }
@@ -488,7 +601,7 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     if (safe.length == 0) {
         [safe appendString:@"asset"];
     }
-    return [NSString stringWithFormat:@"%lu-%@.jpg", (unsigned long)hash, safe];
+    return [NSString stringWithFormat:@"%@-%lu-%@.jpg", EagleDisplayCacheVersion, (unsigned long)hash, safe];
 }
 
 - (BOOL)writeDisplayImageForSourceURL:(NSURL *)sourceURL isVideo:(BOOL)isVideo toURL:(NSURL *)outputURL outputSize:(CGSize *)outputSize {
@@ -544,11 +657,78 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     AVAssetImageGenerator *generator = [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
     generator.appliesPreferredTrackTransform = YES;
     generator.maximumSize = CGSizeMake(1800, 1800);
-    CGImageRef imageRef = [generator copyCGImageAtTime:CMTimeMakeWithSeconds(1.0, 600) actualTime:NULL error:nil];
-    if (imageRef == NULL) {
-        imageRef = [generator copyCGImageAtTime:kCMTimeZero actualTime:NULL error:nil];
+
+    Float64 duration = CMTimeGetSeconds(asset.duration);
+    NSMutableArray<NSNumber *> *seconds = NSMutableArray.array;
+    if (isfinite(duration) && duration > 0.2) {
+        [seconds addObject:@(MIN(MAX(duration * 0.10, 0.25), MAX(0.0, duration - 0.05)))];
+        [seconds addObject:@(MIN(MAX(duration * 0.25, 0.5), MAX(0.0, duration - 0.05)))];
+        [seconds addObject:@(MIN(MAX(duration * 0.50, 0.75), MAX(0.0, duration - 0.05)))];
+        [seconds addObject:@(MIN(MAX(duration * 0.75, 1.0), MAX(0.0, duration - 0.05)))];
     }
-    return imageRef;
+    [seconds addObject:@1.0];
+    [seconds addObject:@0.25];
+    [seconds addObject:@0.0];
+
+    CGImageRef fallbackRef = NULL;
+    CGFloat fallbackBrightness = -1.0;
+    for (NSNumber *second in seconds) {
+        CMTime time = [second doubleValue] <= 0.0 ? kCMTimeZero : CMTimeMakeWithSeconds([second doubleValue], 600);
+        CGImageRef candidateRef = [generator copyCGImageAtTime:time actualTime:NULL error:nil];
+        if (candidateRef == NULL) {
+            continue;
+        }
+
+        CGFloat brightness = [self averageBrightnessForImageRef:candidateRef];
+        if (brightness > fallbackBrightness) {
+            if (fallbackRef != NULL) {
+                CGImageRelease(fallbackRef);
+            }
+            fallbackRef = candidateRef;
+            fallbackBrightness = brightness;
+        } else {
+            CGImageRelease(candidateRef);
+        }
+
+        if (brightness >= 0.08) {
+            return fallbackRef;
+        }
+    }
+    return fallbackRef;
+}
+
+- (CGFloat)averageBrightnessForImageRef:(CGImageRef)imageRef {
+    if (imageRef == NULL) {
+        return 0.0;
+    }
+
+    static const size_t width = 16;
+    static const size_t height = 16;
+    uint8_t pixels[width * height * 4];
+    memset(pixels, 0, sizeof(pixels));
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(pixels,
+                                                 width,
+                                                 height,
+                                                 8,
+                                                 width * 4,
+                                                 colorSpace,
+                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(colorSpace);
+    if (context == NULL) {
+        return 0.0;
+    }
+
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), imageRef);
+    CGContextRelease(context);
+
+    double total = 0.0;
+    for (size_t index = 0; index < width * height; index++) {
+        uint8_t *pixel = pixels + index * 4;
+        total += (0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]) / 255.0;
+    }
+    return (CGFloat)(total / (double)(width * height));
 }
 
 - (NSURL *)thumbnailURLForSourceURL:(NSURL *)sourceURL {
@@ -598,6 +778,14 @@ static NSString * const EagleDisplayCacheVersion = @"2";
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
+        if (argc == 3 && strcmp(argv[1], "--build-index") == 0) {
+            AppDelegate *delegate = AppDelegate.new;
+            delegate.indexQueue = dispatch_queue_create("com.chaopi.EagleGridSaver.indexQueue.cli", DISPATCH_QUEUE_SERIAL);
+            NSURL *libraryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[2]]];
+            BOOL ok = [delegate buildDisplayCacheForLibrary:libraryURL];
+            return ok ? 0 : 1;
+        }
+
         NSApplication *application = NSApplication.sharedApplication;
         AppDelegate *delegate = AppDelegate.new;
         application.delegate = delegate;

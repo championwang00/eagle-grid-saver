@@ -5,10 +5,12 @@
 
 @interface EagleArtwork : NSObject
 @property(nonatomic, copy) NSURL *url;
+@property(nonatomic, copy) NSURL *videoURL;
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic) CGFloat width;
 @property(nonatomic) CGFloat height;
 @property(nonatomic) BOOL isVideo;
+@property(nonatomic) BOOL usesPreparedDisplayImage;
 @end
 
 @implementation EagleArtwork
@@ -20,10 +22,15 @@
 @property(nonatomic, strong) CALayer *contentLayer;
 @property(nonatomic, strong) AVPlayer *player;
 @property(nonatomic, strong) AVPlayerLayer *playerLayer;
+@property(nonatomic, strong) AVPlayerItemVideoOutput *videoOutput;
+@property(nonatomic, strong) id videoEndObserver;
 @property(nonatomic) NSRect frame;
 @property(nonatomic) NSInteger column;
 @property(nonatomic) NSInteger columnCount;
 @property(nonatomic) CGFloat phase;
+@property(nonatomic) CFTimeInterval videoStartTime;
+@property(nonatomic) BOOL videoLayerReady;
+@property(nonatomic) BOOL videoPlaybackFailed;
 @end
 
 @implementation EagleCell
@@ -47,6 +54,7 @@
 @property(nonatomic) CGFloat scrollOffset;
 @property(nonatomic) BOOL isScanning;
 @property(nonatomic) BOOL libraryIsNetworkVolume;
+@property(nonatomic) BOOL displayCacheRequiresUpdate;
 @end
 
 @implementation EagleGridSaverView
@@ -60,11 +68,12 @@ static CGFloat const ScrollSpeed = 0.225;
 static CGFloat const TileCornerRadius = 0.0;
 static CGFloat const TargetFrameRate = 24.0;
 static CGFloat const ImageDecodeMaxPixelSize = 1100.0;
-static CGFloat const VideoPosterMaxPixelSize = 720.0;
+static CGFloat const VideoPosterMaxPixelSize = 900.0;
+static CGFloat const VideoStartupTimeout = 8.0;
 static BOOL const EnableSyntheticGapTest = NO;
 static CGFloat const HorizontalBleed = 0.0;
 static CGFloat const VerticalBleed = 2.0;
-static NSString * const EagleDisplayCacheVersion = @"2";
+static NSString * const EagleDisplayCacheVersion = @"4";
 
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     self = [super initWithFrame:frame isPreview:isPreview];
@@ -145,8 +154,13 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     NSView *content = sheet.contentView;
 
     NSTextField *title = [self configureLabel:@"Eagle Grid Saver" font:[NSFont systemFontOfSize:22.0 weight:NSFontWeightSemibold] color:NSColor.labelColor];
-    title.frame = NSMakeRect(28, 204, 504, 30);
+    title.frame = NSMakeRect(28, 204, 300, 30);
     [content addSubview:title];
+
+    NSTextField *versionLabel = [self configureLabel:[self versionDisplayString] font:[NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
+    versionLabel.frame = NSMakeRect(344, 210, 188, 18);
+    versionLabel.alignment = NSTextAlignmentRight;
+    [content addSubview:versionLabel];
 
     NSTextField *description = [self configureLabel:@"Choose the Eagle .library folder here, inside System Settings. This gives the actual screen saver host permission to read your library." font:[NSFont systemFontOfSize:13.0] color:NSColor.secondaryLabelColor];
     description.frame = NSMakeRect(28, 154, 504, 42);
@@ -172,6 +186,13 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     self.optionsSheet = sheet;
     [self refreshConfigurePathLabel];
     return sheet;
+}
+
+- (NSString *)versionDisplayString {
+    NSDictionary *info = [NSBundle bundleForClass:self.class].infoDictionary;
+    NSString *version = [info[@"CFBundleShortVersionString"] isKindOfClass:NSString.class] ? info[@"CFBundleShortVersionString"] : @"?";
+    NSString *build = [info[@"CFBundleVersion"] isKindOfClass:NSString.class] ? info[@"CFBundleVersion"] : @"?";
+    return [NSString stringWithFormat:@"Version %@ (%@)", version, build];
 }
 
 - (NSTextField *)configureLabel:(NSString *)string font:(NSFont *)font color:(NSColor *)color {
@@ -227,9 +248,11 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     CFPreferencesSetAppValue((CFStringRef)@"EagleGridSaver.libraryBookmark", (__bridge CFDataRef)bookmark, (CFStringRef)@"com.chaopi.EagleGridSaver");
     CFPreferencesAppSynchronize((CFStringRef)@"com.chaopi.EagleGridSaver");
 
-    self.statusMessage = @"Library saved. Close and reopen the preview if it was already running.";
+    self.displayCacheRequiresUpdate = YES;
+    self.statusMessage = @"Library saved. Open Eagle Grid Saver.app and click Update Index before starting the screen saver.";
     [self refreshConfigurePathLabel];
-    [self loadArtworksAsync];
+    [self.artworks removeAllObjects];
+    [self.cells removeAllObjects];
     [self setNeedsDisplay:YES];
 }
 
@@ -356,8 +379,31 @@ static NSString * const EagleDisplayCacheVersion = @"2";
 }
 
 - (NSURL *)displayCacheManifestURL {
-    NSURL *folderURL = [[self applicationSupportFolderURL] URLByAppendingPathComponent:@"DisplayCache" isDirectory:YES];
+    NSURL *configuredCacheURL = [self configuredDisplayCacheFolderURL];
+    NSURL *folderURL = configuredCacheURL ?: [[self applicationSupportFolderURL] URLByAppendingPathComponent:@"DisplayCache" isDirectory:YES];
     return [folderURL URLByAppendingPathComponent:@"manifest.json"];
+}
+
+- (NSURL *)configuredDisplayCacheFolderURL {
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        [ScreenSaverDefaults defaultsForModuleWithName:@"com.chaopi.EagleGridSaver"],
+        NSUserDefaults.standardUserDefaults,
+        [[NSUserDefaults alloc] initWithSuiteName:@"com.chaopi.EagleGridSaver"]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        NSString *path = [defaults stringForKey:@"EagleGridSaver.displayCachePath"];
+        if (path.length > 0) {
+            return [NSURL fileURLWithPath:path isDirectory:YES];
+        }
+    }
+
+    NSString *domainPath = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)@"EagleGridSaver.displayCachePath", (CFStringRef)@"com.chaopi.EagleGridSaver"));
+    if ([domainPath isKindOfClass:NSString.class] && domainPath.length > 0) {
+        return [NSURL fileURLWithPath:domainPath isDirectory:YES];
+    }
+
+    return nil;
 }
 
 - (NSArray<EagleArtwork *> *)loadCachedArtworks {
@@ -366,66 +412,46 @@ static NSString * const EagleDisplayCacheVersion = @"2";
         return displayCache;
     }
 
-    NSData *data = [NSData dataWithContentsOfURL:[self assetIndexURL]];
-    if (data == nil) {
-        return @[];
+    if (!self.displayCacheRequiresUpdate) {
+        self.displayCacheRequiresUpdate = YES;
+        self.statusMessage = [NSString stringWithFormat:@"No prepared index found.\nOpen Eagle Grid Saver.app and click Update Index.\nCache: %@",
+                              self.displayCacheManifestURL.path];
     }
-
-    NSArray *items = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (![items isKindOfClass:NSArray.class]) {
-        return @[];
-    }
-
-    NSMutableArray<EagleArtwork *> *cached = NSMutableArray.array;
-    for (NSDictionary *item in items) {
-        if (![item isKindOfClass:NSDictionary.class]) {
-            continue;
-        }
-        NSString *path = [item[@"path"] isKindOfClass:NSString.class] ? item[@"path"] : nil;
-        if (path.length == 0) {
-            continue;
-        }
-
-        EagleArtwork *artwork = EagleArtwork.new;
-        artwork.url = [NSURL fileURLWithPath:path];
-        artwork.title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : path.lastPathComponent;
-        artwork.width = MAX(1.0, [item[@"width"] doubleValue]);
-        artwork.height = MAX(1.0, [item[@"height"] doubleValue]);
-        artwork.isVideo = [item[@"isVideo"] boolValue];
-        [cached addObject:artwork];
-    }
-    if (cached.count > 0) {
-        self.statusMessage = [NSString stringWithFormat:@"Loaded %lu cached Eagle items", (unsigned long)cached.count];
-    }
-    return cached;
+    return @[];
 }
 
 - (NSArray<EagleArtwork *> *)loadDisplayCacheArtworks {
     NSData *data = [NSData dataWithContentsOfURL:[self displayCacheManifestURL]];
     if (data == nil) {
+        self.statusMessage = [NSString stringWithFormat:@"No prepared index found.\nOpen Eagle Grid Saver.app and click Update Index.\nCache: %@",
+                              self.displayCacheManifestURL.path];
         return @[];
     }
 
     NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![manifest isKindOfClass:NSDictionary.class]) {
+        self.statusMessage = [NSString stringWithFormat:@"Index file is invalid.\nOpen Eagle Grid Saver.app and click Update Index.\nCache: %@",
+                              self.displayCacheManifestURL.path];
         return @[];
     }
 
     NSString *version = [manifest[@"version"] description];
     if (![version isEqualToString:EagleDisplayCacheVersion]) {
-        self.statusMessage = @"Open Eagle Grid Saver.app once to build the latest index.";
+        self.displayCacheRequiresUpdate = YES;
+        self.statusMessage = [NSString stringWithFormat:@"Index version is old (%@). Open Eagle Grid Saver.app and click Update Index.\nCache: %@",
+                              version,
+                              self.displayCacheManifestURL.path];
         return @[];
     }
 
     NSString *cachedLibraryPath = [manifest[@"libraryPath"] isKindOfClass:NSString.class] ? manifest[@"libraryPath"] : nil;
-    NSString *currentLibraryPath = [self configuredLibraryURL].path;
-    if (cachedLibraryPath.length > 0 && currentLibraryPath.length > 0 && ![cachedLibraryPath isEqualToString:currentLibraryPath]) {
-        self.statusMessage = @"The prepared index belongs to another Eagle library. Open Eagle Grid Saver.app and choose this library again.";
-        return @[];
-    }
+    NSArray<NSString *> *currentLibraryPaths = [self configuredLibraryPathCandidates];
 
     NSArray *items = [manifest[@"items"] isKindOfClass:NSArray.class] ? manifest[@"items"] : nil;
     if (items.count == 0) {
+        self.displayCacheRequiresUpdate = YES;
+        self.statusMessage = [NSString stringWithFormat:@"Index has no displayable items. Open Eagle Grid Saver.app and click Update Index.\nCache: %@",
+                              self.displayCacheManifestURL.path];
         return @[];
     }
 
@@ -451,15 +477,88 @@ static NSString * const EagleDisplayCacheVersion = @"2";
         artwork.title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : url.URLByDeletingPathExtension.lastPathComponent;
         artwork.width = MAX(1.0, [item[@"width"] doubleValue]);
         artwork.height = MAX(1.0, [item[@"height"] doubleValue]);
-        artwork.isVideo = NO;
+        artwork.isVideo = [item[@"isVideo"] boolValue];
+        artwork.usesPreparedDisplayImage = YES;
+        NSString *sourcePath = [item[@"sourcePath"] isKindOfClass:NSString.class] ? item[@"sourcePath"] : nil;
+        if (artwork.isVideo && sourcePath.length > 0) {
+            artwork.videoURL = [self remappedSourceURLForPath:sourcePath
+                                            cachedLibraryPath:cachedLibraryPath
+                                          currentLibraryPaths:currentLibraryPaths];
+        }
         [cached addObject:artwork];
     }
 
     if (cached.count > 0) {
         self.libraryIsNetworkVolume = NO;
-        self.statusMessage = [NSString stringWithFormat:@"Loaded %lu prepared Eagle items", (unsigned long)cached.count];
+        self.statusMessage = [NSString stringWithFormat:@"Loaded %lu prepared Eagle items from %@",
+                              (unsigned long)cached.count,
+                              self.displayCacheManifestURL.path];
     }
     return cached;
+}
+
+- (NSURL *)remappedSourceURLForPath:(NSString *)sourcePath cachedLibraryPath:(NSString *)cachedLibraryPath currentLibraryPaths:(NSArray<NSString *> *)currentLibraryPaths {
+    if (sourcePath.length == 0) {
+        return nil;
+    }
+
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    if ([fileManager fileExistsAtPath:sourcePath]) {
+        return [NSURL fileURLWithPath:sourcePath];
+    }
+
+    if (cachedLibraryPath.length > 0 && [sourcePath hasPrefix:cachedLibraryPath]) {
+        NSString *relativePath = [sourcePath substringFromIndex:cachedLibraryPath.length];
+        for (NSString *currentLibraryPath in currentLibraryPaths) {
+            if (currentLibraryPath.length == 0 || [currentLibraryPath isEqualToString:cachedLibraryPath]) {
+                continue;
+            }
+
+            NSString *candidatePath = [currentLibraryPath stringByAppendingString:relativePath];
+            if ([fileManager fileExistsAtPath:candidatePath]) {
+                return [NSURL fileURLWithPath:candidatePath];
+            }
+        }
+    }
+
+    return [NSURL fileURLWithPath:sourcePath];
+}
+
+- (NSArray<NSString *> *)configuredLibraryPathCandidates {
+    NSMutableArray<NSString *> *paths = NSMutableArray.array;
+    NSMutableSet<NSString *> *seen = NSMutableSet.set;
+
+    void (^addPath)(NSString *) = ^(NSString *path) {
+        if (path.length == 0 || [seen containsObject:path]) {
+            return;
+        }
+        [seen addObject:path];
+        [paths addObject:path];
+    };
+
+    NSURL *configuredURL = [self configuredLibraryURL];
+    addPath(configuredURL.path);
+
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        [ScreenSaverDefaults defaultsForModuleWithName:@"com.chaopi.EagleGridSaver"],
+        NSUserDefaults.standardUserDefaults,
+        [[NSUserDefaults alloc] initWithSuiteName:@"com.chaopi.EagleGridSaver"]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        addPath([defaults stringForKey:@"EagleGridSaver.libraryPath"]);
+    }
+
+    NSString *domainPath = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)@"EagleGridSaver.libraryPath", (CFStringRef)@"com.chaopi.EagleGridSaver"));
+    if ([domainPath isKindOfClass:NSString.class]) {
+        addPath(domainPath);
+    }
+
+    NSDictionary *preferencePlist = [NSDictionary dictionaryWithContentsOfFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.chaopi.EagleGridSaver.plist"]];
+    NSString *plistPath = [preferencePlist[@"EagleGridSaver.libraryPath"] isKindOfClass:NSString.class] ? preferencePlist[@"EagleGridSaver.libraryPath"] : nil;
+    addPath(plistPath);
+
+    return paths;
 }
 
 - (void)saveCachedArtworks:(NSArray<EagleArtwork *> *)artworks {
@@ -490,6 +589,7 @@ static NSString * const EagleDisplayCacheVersion = @"2";
         artwork.width = 16.0;
         artwork.height = 9.0;
         artwork.isVideo = NO;
+        artwork.usesPreparedDisplayImage = NO;
         [self.artworks addObject:artwork];
     }
 }
@@ -599,7 +699,8 @@ static NSString * const EagleDisplayCacheVersion = @"2";
 - (NSURL *)configuredLibraryURL {
     NSArray<NSUserDefaults *> *defaultsList = @[
         [ScreenSaverDefaults defaultsForModuleWithName:@"com.chaopi.EagleGridSaver"],
-        NSUserDefaults.standardUserDefaults
+        NSUserDefaults.standardUserDefaults,
+        [[NSUserDefaults alloc] initWithSuiteName:@"com.chaopi.EagleGridSaver"]
     ];
 
     for (NSUserDefaults *defaults in defaultsList) {
@@ -681,6 +782,8 @@ static NSString * const EagleDisplayCacheVersion = @"2";
     artwork.width = MAX(1.0, size.width);
     artwork.height = MAX(1.0, size.height);
     artwork.isVideo = isVideo;
+    artwork.videoURL = isVideo ? fileURL : nil;
+    artwork.usesPreparedDisplayImage = NO;
     return artwork;
 }
 
@@ -857,6 +960,9 @@ static NSString * const EagleDisplayCacheVersion = @"2";
         cell.frame = NSMakeRect(x, leadingY + VerticalGap, width, height);
         cell.artwork = next;
         cell.image = nil;
+        cell.videoPlaybackFailed = NO;
+        cell.contentLayer.contents = nil;
+        cell.contentLayer.hidden = YES;
         [self updateLayerFrameForCell:cell];
         [visibleURLs addObject:next.url];
         [self prepareImageForCell:cell];
@@ -1071,10 +1177,11 @@ static NSString * const EagleDisplayCacheVersion = @"2";
 }
 
 - (NSImage *)decodedImageForArtwork:(EagleArtwork *)artwork maxPixelSize:(CGFloat)maxPixelSize {
+    if (artwork.usesPreparedDisplayImage) {
+        return [self decodedStillImageForURL:artwork.url maxPixelSize:maxPixelSize];
+    }
+
     if (artwork.isVideo) {
-        if (self.libraryIsNetworkVolume) {
-            return nil;
-        }
         NSImage *poster = [self posterImageForVideoURL:artwork.url];
         return [self resizedImage:poster maxPixelSize:MIN(maxPixelSize, VideoPosterMaxPixelSize)];
     }
@@ -1083,7 +1190,11 @@ static NSString * const EagleDisplayCacheVersion = @"2";
         return [self syntheticImageForArtwork:artwork size:NSMakeSize(maxPixelSize, maxPixelSize * 9.0 / 16.0)];
     }
 
-    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)artwork.url, NULL);
+    return [self decodedStillImageForURL:artwork.url maxPixelSize:maxPixelSize];
+}
+
+- (NSImage *)decodedStillImageForURL:(NSURL *)url maxPixelSize:(CGFloat)maxPixelSize {
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
     if (source == NULL) {
         return nil;
     }
@@ -1159,7 +1270,7 @@ static NSString * const EagleDisplayCacheVersion = @"2";
 }
 
 - (void)ensureVideoForCell:(EagleCell *)cell {
-    if (self.libraryIsNetworkVolume) {
+    if (cell.artwork.videoURL == nil || cell.videoPlaybackFailed) {
         [self teardownVideoForCell:cell];
         return;
     }
@@ -1167,38 +1278,88 @@ static NSString * const EagleDisplayCacheVersion = @"2";
         return;
     }
 
-    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:cell.artwork.url];
-    item.preferredForwardBufferDuration = 1.0;
+    NSDictionary *assetOptions = @{ AVURLAssetPreferPreciseDurationAndTimingKey: @NO };
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:cell.artwork.videoURL options:assetOptions];
+    AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:asset];
+    item.preferredForwardBufferDuration = self.libraryIsNetworkVolume ? 4.0 : 1.0;
+
+    NSDictionary *pixelBufferAttributes = @{
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
+    };
+    AVPlayerItemVideoOutput *videoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:pixelBufferAttributes];
+    [item addOutput:videoOutput];
+
     AVPlayer *player = [AVPlayer playerWithPlayerItem:item];
     player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
     player.muted = YES;
     player.volume = 0.0;
-    player.automaticallyWaitsToMinimizeStalling = NO;
+    player.automaticallyWaitsToMinimizeStalling = self.libraryIsNetworkVolume;
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification object:item queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification * _Nonnull note) {
+    id endObserver = [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification object:item queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification * _Nonnull note) {
         [player seekToTime:kCMTimeZero];
         [player play];
     }];
 
     cell.player = player;
+    cell.videoOutput = videoOutput;
+    cell.videoEndObserver = endObserver;
+    cell.videoStartTime = CACurrentMediaTime();
+    cell.videoLayerReady = NO;
     AVPlayerLayer *playerLayer = [AVPlayerLayer playerLayerWithPlayer:player];
     playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
     playerLayer.masksToBounds = YES;
     playerLayer.frame = cell.contentLayer.bounds;
+    playerLayer.hidden = YES;
     cell.playerLayer = playerLayer;
     [cell.contentLayer addSublayer:playerLayer];
+
+    __weak EagleCell *weakCell = cell;
+    [item addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionNew context:(__bridge void *)weakCell];
     [player play];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
+    if (![keyPath isEqualToString:@"status"] || ![object isKindOfClass:AVPlayerItem.class]) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+
+    AVPlayerItem *item = (AVPlayerItem *)object;
+    for (EagleCell *cell in self.cells) {
+        if (cell.player.currentItem != item) {
+            continue;
+        }
+        if (item.status == AVPlayerItemStatusReadyToPlay) {
+            [cell.player play];
+        } else if (item.status == AVPlayerItemStatusFailed) {
+            NSLog(@"EagleGridSaver: video failed %@: %@", cell.artwork.videoURL.path, item.error.localizedDescription);
+            cell.videoPlaybackFailed = YES;
+            [self teardownVideoForCell:cell];
+        }
+        return;
+    }
 }
 
 - (void)teardownVideoForCell:(EagleCell *)cell {
     if (cell.player != nil) {
+        @try {
+            [cell.player.currentItem removeObserver:self forKeyPath:@"status"];
+        } @catch (__unused NSException *exception) {
+        }
         [cell.player pause];
         cell.player = nil;
+    }
+    if (cell.videoEndObserver != nil) {
+        [[NSNotificationCenter defaultCenter] removeObserver:cell.videoEndObserver];
+        cell.videoEndObserver = nil;
     }
     if (cell.playerLayer != nil) {
         [cell.playerLayer removeFromSuperlayer];
         cell.playerLayer = nil;
     }
+    cell.videoOutput = nil;
+    cell.videoStartTime = 0.0;
+    cell.videoLayerReady = NO;
 }
 
 - (void)clearVideoLayers {
@@ -1228,14 +1389,80 @@ static NSString * const EagleDisplayCacheVersion = @"2";
         }
         if (cell == activeVideoCell) {
             [self ensureVideoForCell:cell];
-            cell.playerLayer.frame = cell.contentLayer.bounds;
-            if (cell.player.rate == 0.0) {
+            if (cell.playerLayer != nil) {
+                cell.playerLayer.frame = cell.contentLayer.bounds;
+                if ([self videoHasRenderableFrameForCell:cell]) {
+                    cell.videoLayerReady = YES;
+                    cell.playerLayer.hidden = NO;
+                } else if (!cell.videoLayerReady) {
+                    cell.playerLayer.hidden = YES;
+                    if (cell.videoStartTime > 0.0 && CACurrentMediaTime() - cell.videoStartTime > VideoStartupTimeout) {
+                        NSLog(@"EagleGridSaver: video startup timed out, keeping poster %@", cell.artwork.videoURL.path);
+                        cell.videoPlaybackFailed = YES;
+                        [self teardownVideoForCell:cell];
+                    }
+                }
+            }
+            if (cell.player != nil && cell.player.rate == 0.0) {
                 [cell.player play];
             }
         } else {
             [self teardownVideoForCell:cell];
         }
     }
+}
+
+- (BOOL)videoHasRenderableFrameForCell:(EagleCell *)cell {
+    if (cell.videoOutput == nil || cell.player == nil) {
+        return NO;
+    }
+
+    CMTime itemTime = [cell.videoOutput itemTimeForHostTime:CACurrentMediaTime()];
+    if (![cell.videoOutput hasNewPixelBufferForItemTime:itemTime]) {
+        return cell.videoLayerReady;
+    }
+
+    CVPixelBufferRef pixelBuffer = [cell.videoOutput copyPixelBufferForItemTime:itemTime itemTimeForDisplay:NULL];
+    if (pixelBuffer == NULL) {
+        return cell.videoLayerReady;
+    }
+
+    CGFloat brightness = [self averageBrightnessForPixelBuffer:pixelBuffer];
+    CVPixelBufferRelease(pixelBuffer);
+    return brightness >= 0.025;
+}
+
+- (CGFloat)averageBrightnessForPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+    if (CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+        return 0.0;
+    }
+
+    const size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    const size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    const size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    const uint8_t *base = CVPixelBufferGetBaseAddress(pixelBuffer);
+    if (width == 0 || height == 0 || base == NULL) {
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+        return 0.0;
+    }
+
+    const size_t samplesX = MIN((size_t)12, width);
+    const size_t samplesY = MIN((size_t)12, height);
+    double total = 0.0;
+    size_t count = 0;
+    for (size_t y = 0; y < samplesY; y++) {
+        size_t sampleY = (height * y + height / 2) / samplesY;
+        const uint8_t *row = base + sampleY * bytesPerRow;
+        for (size_t x = 0; x < samplesX; x++) {
+            size_t sampleX = (width * x + width / 2) / samplesX;
+            const uint8_t *pixel = row + sampleX * 4;
+            total += (0.0722 * pixel[0] + 0.7152 * pixel[1] + 0.2126 * pixel[2]) / 255.0;
+            count += 1;
+        }
+    }
+
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    return count > 0 ? (CGFloat)(total / (double)count) : 0.0;
 }
 
 - (CGRect)layerFrameForViewRect:(NSRect)viewRect {

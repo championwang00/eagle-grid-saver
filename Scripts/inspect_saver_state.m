@@ -1,0 +1,63 @@
+#import <Cocoa/Cocoa.h>
+#import <ScreenSaver/ScreenSaver.h>
+
+int main(int argc, const char * argv[]) {
+    @autoreleasepool {
+        if (argc < 2) {
+            fprintf(stderr, "usage: inspect_saver_state <saver-path>\n");
+            return 2;
+        }
+
+        NSString *saverPath = [NSString stringWithUTF8String:argv[1]];
+        NSBundle *bundle = [NSBundle bundleWithPath:saverPath];
+        if (bundle == nil || ![bundle load]) {
+            fprintf(stderr, "failed to load saver bundle: %s\n", saverPath.UTF8String);
+            return 1;
+        }
+
+        Class principalClass = bundle.principalClass;
+        ScreenSaverView *view = [[principalClass alloc] initWithFrame:NSMakeRect(0, 0, 1440, 900) isPreview:YES];
+        if ([view respondsToSelector:NSSelectorFromString(@"configuredLibraryURL")]) {
+            NSURL *configuredURL = [view performSelector:NSSelectorFromString(@"configuredLibraryURL")];
+            printf("configuredLibraryURL=%s\n", configuredURL.path.UTF8String ?: "(nil)");
+        }
+        if ([view respondsToSelector:NSSelectorFromString(@"configuredLibraryPathCandidates")]) {
+            NSArray *paths = [view performSelector:NSSelectorFromString(@"configuredLibraryPathCandidates")];
+            for (NSString *path in paths) {
+                printf("candidateLibraryPath=%s\n", path.UTF8String);
+            }
+        }
+        [view startAnimation];
+        [view drawRect:view.bounds];
+        for (NSInteger i = 0; i < 6; i++) {
+            [view animateOneFrame];
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+        }
+
+        NSArray *artworks = [view valueForKey:@"artworks"];
+        NSUInteger videoCount = 0;
+        NSUInteger playableVideoCount = 0;
+        for (id artwork in artworks) {
+            BOOL isVideo = [[artwork valueForKey:@"isVideo"] boolValue];
+            if (!isVideo) {
+                continue;
+            }
+            videoCount += 1;
+            NSURL *videoURL = [artwork valueForKey:@"videoURL"];
+            printf("videoURL=%s exists=%s\n",
+                   videoURL.path.UTF8String ?: "(nil)",
+                   (videoURL != nil && [NSFileManager.defaultManager fileExistsAtPath:videoURL.path]) ? "yes" : "no");
+            if (videoURL != nil && [NSFileManager.defaultManager fileExistsAtPath:videoURL.path]) {
+                playableVideoCount += 1;
+            }
+        }
+
+        printf("artworks=%lu\n", (unsigned long)artworks.count);
+        printf("videos=%lu\n", (unsigned long)videoCount);
+        printf("playableVideoURLs=%lu\n", (unsigned long)playableVideoCount);
+        if (videoCount > 0 && playableVideoCount == 0) {
+            return 3;
+        }
+    }
+    return 0;
+}

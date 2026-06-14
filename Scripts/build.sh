@@ -18,6 +18,7 @@ clang \
   -framework AVFoundation \
   -framework CoreMedia \
   -framework Cocoa \
+  -framework IOKit \
   -framework QuartzCore \
   -framework ScreenSaver \
   -framework ImageIO \
@@ -36,6 +37,7 @@ clang \
   -framework AVFoundation \
   -framework CoreMedia \
   -framework Cocoa \
+  -framework IOKit \
   -framework QuartzCore \
   -framework ScreenSaver \
   -framework ImageIO \
