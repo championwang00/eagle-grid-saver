@@ -64,6 +64,7 @@ static CGFloat const VideoPosterMaxPixelSize = 720.0;
 static BOOL const EnableSyntheticGapTest = NO;
 static CGFloat const HorizontalBleed = 0.0;
 static CGFloat const VerticalBleed = 2.0;
+static NSString * const EagleDisplayCacheVersion = @"2";
 
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     self = [super initWithFrame:frame isPreview:isPreview];
@@ -120,7 +121,9 @@ static CGFloat const VerticalBleed = 2.0;
         [self loadSyntheticArtworks];
     } else {
         self.artworks = [[self loadCachedArtworks] mutableCopy];
-        [self loadArtworksAsync];
+        if (self.artworks.count == 0) {
+            [self loadArtworksAsync];
+        }
     }
 }
 
@@ -243,8 +246,7 @@ static CGFloat const VerticalBleed = 2.0;
     [super startAnimation];
     if (self.artworks.count == 0) {
         [self loadArtworksAsync];
-    }
-    if (self.cells.count == 0) {
+    } else if (self.cells.count == 0) {
         [self rebuildLayout];
     }
     [self setNeedsDisplay:YES];
@@ -341,14 +343,29 @@ static CGFloat const VerticalBleed = 2.0;
     });
 }
 
-- (NSURL *)assetIndexURL {
+- (NSURL *)applicationSupportFolderURL {
     NSURL *supportURL = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
     NSURL *folderURL = [supportURL URLByAppendingPathComponent:@"EagleGridSaver" isDirectory:YES];
     [NSFileManager.defaultManager createDirectoryAtURL:folderURL withIntermediateDirectories:YES attributes:nil error:nil];
+    return folderURL;
+}
+
+- (NSURL *)assetIndexURL {
+    NSURL *folderURL = [self applicationSupportFolderURL];
     return [folderURL URLByAppendingPathComponent:@"asset-index.json"];
 }
 
+- (NSURL *)displayCacheManifestURL {
+    NSURL *folderURL = [[self applicationSupportFolderURL] URLByAppendingPathComponent:@"DisplayCache" isDirectory:YES];
+    return [folderURL URLByAppendingPathComponent:@"manifest.json"];
+}
+
 - (NSArray<EagleArtwork *> *)loadCachedArtworks {
+    NSArray<EagleArtwork *> *displayCache = [self loadDisplayCacheArtworks];
+    if (displayCache.count > 0) {
+        return displayCache;
+    }
+
     NSData *data = [NSData dataWithContentsOfURL:[self assetIndexURL]];
     if (data == nil) {
         return @[];
@@ -379,6 +396,68 @@ static CGFloat const VerticalBleed = 2.0;
     }
     if (cached.count > 0) {
         self.statusMessage = [NSString stringWithFormat:@"Loaded %lu cached Eagle items", (unsigned long)cached.count];
+    }
+    return cached;
+}
+
+- (NSArray<EagleArtwork *> *)loadDisplayCacheArtworks {
+    NSData *data = [NSData dataWithContentsOfURL:[self displayCacheManifestURL]];
+    if (data == nil) {
+        return @[];
+    }
+
+    NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![manifest isKindOfClass:NSDictionary.class]) {
+        return @[];
+    }
+
+    NSString *version = [manifest[@"version"] description];
+    if (![version isEqualToString:EagleDisplayCacheVersion]) {
+        self.statusMessage = @"Open Eagle Grid Saver.app once to build the latest index.";
+        return @[];
+    }
+
+    NSString *cachedLibraryPath = [manifest[@"libraryPath"] isKindOfClass:NSString.class] ? manifest[@"libraryPath"] : nil;
+    NSString *currentLibraryPath = [self configuredLibraryURL].path;
+    if (cachedLibraryPath.length > 0 && currentLibraryPath.length > 0 && ![cachedLibraryPath isEqualToString:currentLibraryPath]) {
+        self.statusMessage = @"The prepared index belongs to another Eagle library. Open Eagle Grid Saver.app and choose this library again.";
+        return @[];
+    }
+
+    NSArray *items = [manifest[@"items"] isKindOfClass:NSArray.class] ? manifest[@"items"] : nil;
+    if (items.count == 0) {
+        return @[];
+    }
+
+    NSURL *cacheRoot = [[self displayCacheManifestURL] URLByDeletingLastPathComponent];
+    NSMutableArray<EagleArtwork *> *cached = NSMutableArray.array;
+    for (NSDictionary *item in items) {
+        if (![item isKindOfClass:NSDictionary.class]) {
+            continue;
+        }
+
+        NSString *relativePath = [item[@"cachePath"] isKindOfClass:NSString.class] ? item[@"cachePath"] : nil;
+        if (relativePath.length == 0) {
+            continue;
+        }
+
+        NSURL *url = [cacheRoot URLByAppendingPathComponent:relativePath];
+        if (![NSFileManager.defaultManager fileExistsAtPath:url.path]) {
+            continue;
+        }
+
+        EagleArtwork *artwork = EagleArtwork.new;
+        artwork.url = url;
+        artwork.title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : url.URLByDeletingPathExtension.lastPathComponent;
+        artwork.width = MAX(1.0, [item[@"width"] doubleValue]);
+        artwork.height = MAX(1.0, [item[@"height"] doubleValue]);
+        artwork.isVideo = NO;
+        [cached addObject:artwork];
+    }
+
+    if (cached.count > 0) {
+        self.libraryIsNetworkVolume = NO;
+        self.statusMessage = [NSString stringWithFormat:@"Loaded %lu prepared Eagle items", (unsigned long)cached.count];
     }
     return cached;
 }
