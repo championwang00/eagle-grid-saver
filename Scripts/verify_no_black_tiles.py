@@ -1,28 +1,16 @@
 #!/usr/bin/env python3
 import json
+import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 from PIL import Image
 
 
 def run(cmd, cwd):
     subprocess.run(cmd, cwd=cwd, check=True)
-
-
-def backup_defaults(project):
-    backup = pathlib.Path(tempfile.mkdtemp(prefix="EagleGridSaverDefaultsBackup-")) / "com.chaopi.EagleGridSaver.plist"
-    result = subprocess.run(["defaults", "export", "com.chaopi.EagleGridSaver", str(backup)], cwd=project)
-    return backup if result.returncode == 0 else None
-
-
-def restore_defaults(project, backup):
-    if backup is not None and backup.exists():
-        subprocess.run(["defaults", "import", "com.chaopi.EagleGridSaver", str(backup)], cwd=project, check=False)
-    else:
-        subprocess.run(["defaults", "delete", "com.chaopi.EagleGridSaver"], cwd=project, check=False)
-    subprocess.run(["killall", "cfprefsd"], cwd=project, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def write_ppm(path, color):
@@ -73,13 +61,13 @@ def main():
     support = pathlib.Path.home() / "Library/Application Support/EagleGridSaver"
     cache = support / "DisplayCache"
     backup = pathlib.Path(tempfile.mkdtemp(prefix="EagleGridSaverCacheBackup-")) / "DisplayCache"
-    defaults_backup = backup_defaults(project)
     had_cache = cache.exists()
     if had_cache:
         shutil.move(str(cache), str(backup))
     cache.mkdir(parents=True, exist_ok=True)
 
     run(["./Scripts/build.sh"], project)
+    app = project / "dist/Eagle Grid Saver.app/Contents/MacOS/EagleGridSaverApp"
     # The app does not expose a CLI index command, so build a compatible manifest directly.
     items = []
     for file in sorted(images.glob("*.info/*")):
@@ -130,10 +118,8 @@ def main():
         if ratio > 0.01:
             raise SystemExit("black tile check failed")
     finally:
-        restore_defaults(project, defaults_backup)
         shutil.rmtree(cache, ignore_errors=True)
         if had_cache:
-            shutil.rmtree(cache, ignore_errors=True)
             shutil.move(str(backup), str(cache))
 
 
