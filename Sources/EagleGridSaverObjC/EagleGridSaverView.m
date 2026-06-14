@@ -302,6 +302,11 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
 }
 
 - (CGFloat)scrollSpeedMultiplier {
+    NSNumber *runtimeValue = [self runtimeConfigScrollSpeedMultiplier];
+    if (runtimeValue != nil) {
+        return [self clampedScrollSpeedMultiplier:runtimeValue.doubleValue];
+    }
+
     NSDictionary *containerPreferences = [NSDictionary dictionaryWithContentsOfFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.chaopi.EagleGridSaver.plist"]];
     id containerValue = containerPreferences[EagleScrollSpeedMultiplierKey];
     if (containerValue != nil) {
@@ -349,6 +354,85 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     }
     CFPreferencesSetAppValue((CFStringRef)EagleScrollSpeedMultiplierKey, (__bridge CFNumberRef)value, (CFStringRef)@"com.chaopi.EagleGridSaver");
     CFPreferencesAppSynchronize((CFStringRef)@"com.chaopi.EagleGridSaver");
+    [self saveCurrentHostPreferenceValue:value forKey:EagleScrollSpeedMultiplierKey];
+    [self writeRuntimeConfigWithSpeedMultiplier:value];
+}
+
+- (void)saveCurrentHostPreferenceValue:(id)value forKey:(NSString *)key {
+    NSString *preferencesPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.chaopi.EagleGridSaver.plist"];
+    NSMutableDictionary *preferences = [NSMutableDictionary dictionaryWithContentsOfFile:preferencesPath] ?: NSMutableDictionary.dictionary;
+    preferences[key] = value;
+    [NSFileManager.defaultManager createDirectoryAtPath:preferencesPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    [preferences writeToFile:preferencesPath atomically:YES];
+}
+
+- (NSURL *)runtimeConfigURLForDisplayCacheFolderURL:(NSURL *)cacheURL {
+    return [cacheURL URLByAppendingPathComponent:@"runtime-config.json"];
+}
+
+- (NSNumber *)runtimeConfigScrollSpeedMultiplier {
+    NSMutableArray<NSURL *> *configURLs = NSMutableArray.array;
+    NSMutableSet<NSString *> *seen = NSMutableSet.set;
+    void (^addConfigForCacheURL)(NSURL *) = ^(NSURL *cacheURL) {
+        if (cacheURL == nil) {
+            return;
+        }
+        NSURL *configURL = [self runtimeConfigURLForDisplayCacheFolderURL:cacheURL];
+        if (configURL.path.length == 0 || [seen containsObject:configURL.path]) {
+            return;
+        }
+        [seen addObject:configURL.path];
+        [configURLs addObject:configURL];
+    };
+
+    addConfigForCacheURL([self configuredDisplayCacheFolderURL]);
+    addConfigForCacheURL([[self applicationSupportFolderURL] URLByAppendingPathComponent:@"DisplayCache" isDirectory:YES]);
+
+    for (NSURL *configURL in configURLs) {
+        NSData *data = [NSData dataWithContentsOfURL:configURL];
+        if (data == nil) {
+            continue;
+        }
+        id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSDictionary *config = [object isKindOfClass:NSDictionary.class] ? object : nil;
+        id value = config[EagleScrollSpeedMultiplierKey] ?: config[@"scrollSpeedMultiplier"];
+        if ([value respondsToSelector:@selector(doubleValue)]) {
+            return @([value doubleValue]);
+        }
+    }
+
+    return nil;
+}
+
+- (void)writeRuntimeConfigWithSpeedMultiplier:(NSNumber *)speedMultiplier {
+    NSDictionary *config = @{
+        @"version": @1,
+        EagleScrollSpeedMultiplierKey: @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
+        @"scrollSpeedMultiplier": @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
+        @"updatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970)
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
+    if (data == nil) {
+        return;
+    }
+
+    NSMutableArray<NSURL *> *cacheFolders = NSMutableArray.array;
+    NSMutableSet<NSString *> *seen = NSMutableSet.set;
+    void (^addCacheURL)(NSURL *) = ^(NSURL *cacheURL) {
+        if (cacheURL == nil || cacheURL.path.length == 0 || [seen containsObject:cacheURL.path]) {
+            return;
+        }
+        [seen addObject:cacheURL.path];
+        [cacheFolders addObject:cacheURL];
+    };
+
+    addCacheURL([self configuredDisplayCacheFolderURL]);
+    addCacheURL([[self applicationSupportFolderURL] URLByAppendingPathComponent:@"DisplayCache" isDirectory:YES]);
+
+    for (NSURL *cacheURL in cacheFolders) {
+        [NSFileManager.defaultManager createDirectoryAtURL:cacheURL withIntermediateDirectories:YES attributes:nil error:nil];
+        [data writeToURL:[self runtimeConfigURLForDisplayCacheFolderURL:cacheURL] atomically:YES];
+    }
 }
 
 - (void)startAnimation {
@@ -513,7 +597,9 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
 - (NSArray<EagleArtwork *> *)loadCachedArtworks {
     NSArray<EagleArtwork *> *displayCache = [self loadDisplayCacheArtworks];
     if (displayCache.count > 0) {
-        return displayCache;
+        NSMutableArray<EagleArtwork *> *randomized = [displayCache mutableCopy];
+        [self shuffleArray:randomized];
+        return randomized;
     }
 
     if (!self.displayCacheRequiresUpdate) {

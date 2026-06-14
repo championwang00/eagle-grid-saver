@@ -354,14 +354,17 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     CFPreferencesSetAppValue((CFStringRef)EagleScrollSpeedMultiplierKey, (__bridge CFNumberRef)value, (CFStringRef)EagleDefaultsDomain);
     CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
     [self saveContainerPreferenceValue:value forKey:EagleScrollSpeedMultiplierKey];
+    [self writeRuntimeConfigWithSpeedMultiplier:value];
 }
 
 - (void)saveContainerPreferenceValue:(id)value forKey:(NSString *)key {
-    NSURL *containerPreferencesURL = [self legacyScreenSaverContainerPreferencesURL];
-    NSMutableDictionary *containerPreferences = [NSMutableDictionary dictionaryWithContentsOfURL:containerPreferencesURL] ?: NSMutableDictionary.dictionary;
-    containerPreferences[key] = value;
-    [NSFileManager.defaultManager createDirectoryAtURL:containerPreferencesURL.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
-    [containerPreferences writeToURL:containerPreferencesURL atomically:YES];
+    for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
+        NSURL *containerPreferencesURL = [self preferencesURLForScreenSaverContainerRootURL:containerRootURL];
+        NSMutableDictionary *containerPreferences = [NSMutableDictionary dictionaryWithContentsOfURL:containerPreferencesURL] ?: NSMutableDictionary.dictionary;
+        containerPreferences[key] = value;
+        [NSFileManager.defaultManager createDirectoryAtURL:containerPreferencesURL.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        [containerPreferences writeToURL:containerPreferencesURL atomically:YES];
+    }
 }
 
 - (NSURL *)configuredLibraryURL {
@@ -434,16 +437,76 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     return folderURL;
 }
 
-- (NSURL *)legacyScreenSaverContainerDisplayCacheFolderURL {
+- (NSURL *)runtimeConfigURLForDisplayCacheFolderURL:(NSURL *)cacheURL {
+    return [cacheURL URLByAppendingPathComponent:@"runtime-config.json"];
+}
+
+- (void)writeRuntimeConfigWithSpeedMultiplier:(NSNumber *)speedMultiplier {
+    NSDictionary *config = @{
+        @"version": @1,
+        EagleScrollSpeedMultiplierKey: @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
+        @"scrollSpeedMultiplier": @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
+        @"updatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970)
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
+    if (data == nil) {
+        return;
+    }
+
+    NSMutableArray<NSURL *> *cacheFolders = NSMutableArray.array;
+    [cacheFolders addObject:[self displayCacheFolderURL]];
+    for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
+        [cacheFolders addObject:[self displayCacheFolderURLForScreenSaverContainerRootURL:containerRootURL]];
+    }
+
+    for (NSURL *cacheURL in cacheFolders) {
+        [NSFileManager.defaultManager createDirectoryAtURL:cacheURL withIntermediateDirectories:YES attributes:nil error:nil];
+        [data writeToURL:[self runtimeConfigURLForDisplayCacheFolderURL:cacheURL] atomically:YES];
+    }
+}
+
+- (NSArray<NSURL *> *)screenSaverContainerRootURLs {
     NSURL *homeURL = NSFileManager.defaultManager.homeDirectoryForCurrentUser;
-    NSURL *folderURL = [homeURL URLByAppendingPathComponent:@"Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Application Support/EagleGridSaver/DisplayCache" isDirectory:YES];
+    NSURL *containersURL = [homeURL URLByAppendingPathComponent:@"Library/Containers" isDirectory:YES];
+    NSArray<NSString *> *knownContainerNames = @[
+        @"com.apple.ScreenSaver.Engine.legacyScreenSaver",
+        @"com.apple.ScreenSaver.Engine.legacyScreenSaver.x86-64",
+        @"com.apple.ScreenSaver.Engine"
+    ];
+
+    NSMutableArray<NSURL *> *roots = NSMutableArray.array;
+    NSMutableSet<NSString *> *seen = NSMutableSet.set;
+    void (^addRoot)(NSURL *) = ^(NSURL *rootURL) {
+        if (rootURL.path.length == 0 || [seen containsObject:rootURL.path]) {
+            return;
+        }
+        [seen addObject:rootURL.path];
+        [roots addObject:rootURL];
+    };
+
+    for (NSString *name in knownContainerNames) {
+        addRoot([containersURL URLByAppendingPathComponent:name isDirectory:YES]);
+    }
+
+    NSArray<NSURL *> *children = [NSFileManager.defaultManager contentsOfDirectoryAtURL:containersURL includingPropertiesForKeys:@[NSURLIsDirectoryKey] options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
+    for (NSURL *child in children) {
+        NSString *name = child.lastPathComponent;
+        if ([name hasPrefix:@"com.apple.ScreenSaver.Engine"] || [name containsString:@"legacyScreenSaver"]) {
+            addRoot(child);
+        }
+    }
+
+    return roots;
+}
+
+- (NSURL *)displayCacheFolderURLForScreenSaverContainerRootURL:(NSURL *)containerRootURL {
+    NSURL *folderURL = [containerRootURL URLByAppendingPathComponent:@"Data/Library/Application Support/EagleGridSaver/DisplayCache" isDirectory:YES];
     [NSFileManager.defaultManager createDirectoryAtURL:folderURL withIntermediateDirectories:YES attributes:nil error:nil];
     return folderURL;
 }
 
-- (NSURL *)legacyScreenSaverContainerPreferencesURL {
-    NSURL *homeURL = NSFileManager.defaultManager.homeDirectoryForCurrentUser;
-    return [homeURL URLByAppendingPathComponent:@"Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Preferences/com.chaopi.EagleGridSaver.plist"];
+- (NSURL *)preferencesURLForScreenSaverContainerRootURL:(NSURL *)containerRootURL {
+    return [containerRootURL URLByAppendingPathComponent:@"Data/Library/Preferences/com.chaopi.EagleGridSaver.plist"];
 }
 
 - (void)prepareIndexForLibrary:(NSURL *)libraryURL {
@@ -617,10 +680,12 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 
     [self removeStaleCacheFilesInFolder:cacheURL keepingItems:items];
 
+    NSNumber *speedMultiplier = @([self scrollSpeedMultiplier]);
     NSDictionary *manifest = @{
         @"version": EagleDisplayCacheVersion,
         @"libraryPath": libraryURL.path ?: @"",
         @"generatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970),
+        @"scrollSpeedMultiplier": speedMultiplier,
         @"items": items
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:manifest options:0 error:nil];
@@ -633,6 +698,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
         });
         return NO;
     }
+    [self writeRuntimeConfigWithSpeedMultiplier:speedMultiplier];
 
     NSUserDefaults *standardDefaults = NSUserDefaults.standardUserDefaults;
     [standardDefaults setObject:cacheURL.path forKey:EagleDisplayCachePathKey];
@@ -643,14 +709,20 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     CFPreferencesSetAppValue((CFStringRef)EagleDisplayCachePathKey, (__bridge CFStringRef)cacheURL.path, (CFStringRef)EagleDefaultsDomain);
     CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
 
-    NSURL *containerCacheURL = [self legacyScreenSaverContainerDisplayCacheFolderURL];
-    BOOL mirrored = [self mirrorDisplayCacheFromFolder:cacheURL toFolder:containerCacheURL keepingItems:items];
-    if (mirrored) {
-        NSURL *containerPreferencesURL = [self legacyScreenSaverContainerPreferencesURL];
+    NSUInteger mirroredContainerCount = 0;
+    for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
+        NSURL *containerCacheURL = [self displayCacheFolderURLForScreenSaverContainerRootURL:containerRootURL];
+        BOOL mirrored = [self mirrorDisplayCacheFromFolder:cacheURL toFolder:containerCacheURL keepingItems:items];
+        if (!mirrored) {
+            continue;
+        }
+
+        mirroredContainerCount += 1;
+        NSURL *containerPreferencesURL = [self preferencesURLForScreenSaverContainerRootURL:containerRootURL];
         NSMutableDictionary *containerPreferences = [NSMutableDictionary dictionaryWithContentsOfURL:containerPreferencesURL] ?: NSMutableDictionary.dictionary;
         containerPreferences[EagleLibraryPathKey] = libraryURL.path ?: @"";
         containerPreferences[EagleDisplayCachePathKey] = containerCacheURL.path ?: @"";
-        containerPreferences[EagleScrollSpeedMultiplierKey] = @([self scrollSpeedMultiplier]);
+        containerPreferences[EagleScrollSpeedMultiplierKey] = speedMultiplier;
         [NSFileManager.defaultManager createDirectoryAtURL:containerPreferencesURL.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         [containerPreferences writeToURL:containerPreferencesURL atomically:YES];
     }
@@ -660,12 +732,13 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     self.lastSkippedCount = failed;
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.statusLabel.stringValue = [NSString stringWithFormat:@"Ready. Index has %lu items (%lu videos), skipped %lu. Cache: %@%@",
+        self.statusLabel.stringValue = [NSString stringWithFormat:@"Ready. Index has %lu items (%lu videos), skipped %lu. Cache: %@ (synced %lu screen saver container%@)",
                                         (unsigned long)succeeded,
                                         (unsigned long)videoSucceeded,
                                         (unsigned long)failed,
                                         cacheURL.path,
-                                        mirrored ? @" (screen saver cache ready)" : @" (screen saver cache mirror failed)"];
+                                        (unsigned long)mirroredContainerCount,
+                                        mirroredContainerCount == 1 ? @"" : @"s"];
     });
     return succeeded > 0;
 }
@@ -680,6 +753,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 
     NSMutableArray<NSString *> *names = NSMutableArray.array;
     [names addObject:@"manifest.json"];
+    [names addObject:@"runtime-config.json"];
     for (NSDictionary *item in items) {
         NSString *cachePath = [item[@"cachePath"] isKindOfClass:NSString.class] ? item[@"cachePath"] : nil;
         if (cachePath.length > 0) {
@@ -718,6 +792,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 - (void)removeStaleCacheFilesInFolder:(NSURL *)cacheURL keepingItems:(NSArray<NSDictionary *> *)items {
     NSMutableSet<NSString *> *keepNames = NSMutableSet.set;
     [keepNames addObject:@"manifest.json"];
+    [keepNames addObject:@"runtime-config.json"];
     for (NSDictionary *item in items) {
         NSString *cachePath = [item[@"cachePath"] isKindOfClass:NSString.class] ? item[@"cachePath"] : nil;
         if (cachePath.length > 0) {

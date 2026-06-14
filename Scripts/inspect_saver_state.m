@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <objc/message.h>
 #import <ScreenSaver/ScreenSaver.h>
 
 int main(int argc, const char * argv[]) {
@@ -27,6 +28,11 @@ int main(int argc, const char * argv[]) {
                 printf("candidateLibraryPath=%s\n", path.UTF8String);
             }
         }
+        if ([view respondsToSelector:NSSelectorFromString(@"scrollSpeedMultiplier")]) {
+            double (*sendDouble)(id, SEL) = (double (*)(id, SEL))objc_msgSend;
+            double speed = sendDouble(view, NSSelectorFromString(@"scrollSpeedMultiplier"));
+            printf("scrollSpeedMultiplier=%.2f\n", speed);
+        }
         [view startAnimation];
         [view drawRect:view.bounds];
         for (NSInteger i = 0; i < 6; i++) {
@@ -35,9 +41,18 @@ int main(int argc, const char * argv[]) {
         }
 
         NSArray *artworks = [view valueForKey:@"artworks"];
+        NSUInteger inspectedArtworkCount = 0;
         NSUInteger videoCount = 0;
         NSUInteger playableVideoCount = 0;
         for (id artwork in artworks) {
+            if (inspectedArtworkCount < 6) {
+                NSString *title = [artwork valueForKey:@"title"];
+                NSURL *url = [artwork valueForKey:@"url"];
+                printf("artwork=%s path=%s\n",
+                       title.UTF8String ?: "(untitled)",
+                       url.path.UTF8String ?: "(nil)");
+                inspectedArtworkCount += 1;
+            }
             BOOL isVideo = [[artwork valueForKey:@"isVideo"] boolValue];
             if (!isVideo) {
                 continue;
