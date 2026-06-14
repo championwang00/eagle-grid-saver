@@ -50,6 +50,8 @@
 @property(nonatomic, strong) NSTextField *configurePathLabel;
 @property(nonatomic, strong) NSTextField *configureSpeedLabel;
 @property(nonatomic, strong) NSSlider *configureSpeedSlider;
+@property(nonatomic, strong) NSTextField *configureColumnLabel;
+@property(nonatomic, strong) NSPopUpButton *configureColumnPopUpButton;
 @property(nonatomic, copy) NSString *statusMessage;
 @property(nonatomic) NSSize lastLayoutSize;
 @property(nonatomic) NSInteger tick;
@@ -70,6 +72,8 @@ static CGFloat const ScrollSpeedAtLegacyFrameRate = 0.225;
 static CGFloat const LegacyFrameRate = 24.0;
 static CGFloat const MinScrollSpeedMultiplier = 0.25;
 static CGFloat const MaxScrollSpeedMultiplier = 10.0;
+static NSInteger const MinColumnCount = 1;
+static NSInteger const MaxColumnCount = 6;
 static CGFloat const TileCornerRadius = 0.0;
 static CGFloat const TargetFrameRate = 60.0;
 static CGFloat const ImageDecodeMaxPixelSize = 1100.0;
@@ -80,6 +84,7 @@ static CGFloat const HorizontalBleed = 0.0;
 static CGFloat const VerticalBleed = 2.0;
 static NSString * const EagleDisplayCacheVersion = @"4";
 static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollSpeedMultiplier";
+static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
 
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     self = [super initWithFrame:frame isPreview:isPreview];
@@ -150,10 +155,11 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     if (self.optionsSheet != nil) {
         [self refreshConfigurePathLabel];
         [self refreshConfigureSpeedControls];
+        [self refreshConfigureColumnControls];
         return self.optionsSheet;
     }
 
-    NSWindow *sheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 310)
+    NSWindow *sheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 350)
                                                  styleMask:(NSWindowStyleMaskTitled)
                                                    backing:NSBackingStoreBuffered
                                                      defer:NO];
@@ -161,31 +167,31 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     NSView *content = sheet.contentView;
 
     NSTextField *title = [self configureLabel:@"Eagle Grid Saver" font:[NSFont systemFontOfSize:22.0 weight:NSFontWeightSemibold] color:NSColor.labelColor];
-    title.frame = NSMakeRect(28, 254, 300, 30);
+    title.frame = NSMakeRect(28, 294, 300, 30);
     [content addSubview:title];
 
     NSTextField *versionLabel = [self configureLabel:[self versionDisplayString] font:[NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
-    versionLabel.frame = NSMakeRect(344, 260, 188, 18);
+    versionLabel.frame = NSMakeRect(344, 300, 188, 18);
     versionLabel.alignment = NSTextAlignmentRight;
     [content addSubview:versionLabel];
 
     NSTextField *description = [self configureLabel:@"Choose the Eagle .library folder here, inside System Settings. This gives the actual screen saver host permission to read your library." font:[NSFont systemFontOfSize:13.0] color:NSColor.secondaryLabelColor];
-    description.frame = NSMakeRect(28, 204, 504, 42);
+    description.frame = NSMakeRect(28, 244, 504, 42);
     description.maximumNumberOfLines = 2;
     [content addSubview:description];
 
     self.configurePathLabel = [self configureLabel:@"" font:[NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightRegular] color:NSColor.labelColor];
-    self.configurePathLabel.frame = NSMakeRect(28, 156, 504, 34);
+    self.configurePathLabel.frame = NSMakeRect(28, 196, 504, 34);
     self.configurePathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     self.configurePathLabel.maximumNumberOfLines = 2;
     [content addSubview:self.configurePathLabel];
 
     self.configureSpeedLabel = [self configureLabel:@"" font:[NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium] color:NSColor.labelColor];
-    self.configureSpeedLabel.frame = NSMakeRect(28, 116, 180, 20);
+    self.configureSpeedLabel.frame = NSMakeRect(28, 156, 180, 20);
     [content addSubview:self.configureSpeedLabel];
 
     self.configureSpeedSlider = NSSlider.new;
-    self.configureSpeedSlider.frame = NSMakeRect(208, 112, 324, 24);
+    self.configureSpeedSlider.frame = NSMakeRect(208, 152, 324, 24);
     self.configureSpeedSlider.minValue = MinScrollSpeedMultiplier;
     self.configureSpeedSlider.maxValue = MaxScrollSpeedMultiplier;
     self.configureSpeedSlider.numberOfTickMarks = 11;
@@ -193,6 +199,18 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     self.configureSpeedSlider.target = self;
     self.configureSpeedSlider.action = @selector(configureSpeedChanged:);
     [content addSubview:self.configureSpeedSlider];
+
+    self.configureColumnLabel = [self configureLabel:@"" font:[NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium] color:NSColor.labelColor];
+    self.configureColumnLabel.frame = NSMakeRect(28, 116, 180, 22);
+    [content addSubview:self.configureColumnLabel];
+
+    self.configureColumnPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(208, 112, 120, 28) pullsDown:NO];
+    for (NSInteger column = MinColumnCount; column <= MaxColumnCount; column++) {
+        [self.configureColumnPopUpButton addItemWithTitle:[NSString stringWithFormat:@"%ld", (long)column]];
+    }
+    self.configureColumnPopUpButton.target = self;
+    self.configureColumnPopUpButton.action = @selector(configureColumnCountChanged:);
+    [content addSubview:self.configureColumnPopUpButton];
 
     NSButton *chooseButton = [NSButton buttonWithTitle:@"Choose Eagle Library..." target:self action:@selector(chooseLibraryFromConfigureSheet:)];
     chooseButton.frame = NSMakeRect(28, 54, 180, 34);
@@ -207,6 +225,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     self.optionsSheet = sheet;
     [self refreshConfigurePathLabel];
     [self refreshConfigureSpeedControls];
+    [self refreshConfigureColumnControls];
     return sheet;
 }
 
@@ -293,9 +312,27 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     self.configureSpeedSlider.doubleValue = multiplier;
 }
 
+- (void)refreshConfigureColumnControls {
+    NSInteger columnCount = [self columnCount];
+    self.configureColumnLabel.stringValue = [NSString stringWithFormat:@"Columns %ld", (long)columnCount];
+    [self.configureColumnPopUpButton selectItemAtIndex:columnCount - MinColumnCount];
+}
+
 - (void)configureSpeedChanged:(NSSlider *)sender {
     [self saveScrollSpeedMultiplier:sender.doubleValue];
     [self refreshConfigureSpeedControls];
+}
+
+- (void)configureColumnCountChanged:(NSPopUpButton *)sender {
+    NSInteger oldColumnCount = [self columnCount];
+    NSInteger newColumnCount = sender.indexOfSelectedItem + MinColumnCount;
+    [self saveColumnCount:newColumnCount];
+    [self refreshConfigureColumnControls];
+    if (newColumnCount != oldColumnCount) {
+        self.lastLayoutSize = NSZeroSize;
+        [self rebuildLayoutIfNeeded];
+        [self setNeedsDisplay:YES];
+    }
 }
 
 - (CGFloat)effectiveScrollSpeed {
@@ -356,7 +393,61 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     CFPreferencesSetAppValue((CFStringRef)EagleScrollSpeedMultiplierKey, (__bridge CFNumberRef)value, (CFStringRef)@"com.chaopi.EagleGridSaver");
     CFPreferencesAppSynchronize((CFStringRef)@"com.chaopi.EagleGridSaver");
     [self saveCurrentHostPreferenceValue:value forKey:EagleScrollSpeedMultiplierKey];
-    [self writeRuntimeConfigWithSpeedMultiplier:value];
+    [self writeRuntimeConfigWithSpeedMultiplier:value columnCount:@([self columnCount])];
+}
+
+- (NSInteger)columnCount {
+    NSNumber *runtimeValue = [self runtimeConfigColumnCount];
+    if (runtimeValue != nil) {
+        return [self clampedColumnCount:runtimeValue.integerValue];
+    }
+
+    NSDictionary *containerPreferences = [NSDictionary dictionaryWithContentsOfFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.chaopi.EagleGridSaver.plist"]];
+    id containerValue = containerPreferences[EagleColumnCountKey];
+    if (containerValue != nil) {
+        return [self clampedColumnCount:[containerValue integerValue]];
+    }
+
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        [ScreenSaverDefaults defaultsForModuleWithName:@"com.chaopi.EagleGridSaver"],
+        NSUserDefaults.standardUserDefaults,
+        [[NSUserDefaults alloc] initWithSuiteName:@"com.chaopi.EagleGridSaver"]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        id value = [defaults objectForKey:EagleColumnCountKey];
+        if (value != nil) {
+            return [self clampedColumnCount:[value integerValue]];
+        }
+    }
+
+    id domainValue = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)EagleColumnCountKey, (CFStringRef)@"com.chaopi.EagleGridSaver"));
+    if (domainValue != nil) {
+        return [self clampedColumnCount:[domainValue integerValue]];
+    }
+
+    return 2;
+}
+
+- (NSInteger)clampedColumnCount:(NSInteger)value {
+    return MIN(MaxColumnCount, MAX(MinColumnCount, value));
+}
+
+- (void)saveColumnCount:(NSInteger)columnCount {
+    NSNumber *value = @([self clampedColumnCount:columnCount]);
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        [ScreenSaverDefaults defaultsForModuleWithName:@"com.chaopi.EagleGridSaver"],
+        NSUserDefaults.standardUserDefaults,
+        [[NSUserDefaults alloc] initWithSuiteName:@"com.chaopi.EagleGridSaver"]
+    ];
+    for (NSUserDefaults *defaults in defaultsList) {
+        [defaults setObject:value forKey:EagleColumnCountKey];
+        [defaults synchronize];
+    }
+    CFPreferencesSetAppValue((CFStringRef)EagleColumnCountKey, (__bridge CFNumberRef)value, (CFStringRef)@"com.chaopi.EagleGridSaver");
+    CFPreferencesAppSynchronize((CFStringRef)@"com.chaopi.EagleGridSaver");
+    [self saveCurrentHostPreferenceValue:value forKey:EagleColumnCountKey];
+    [self writeRuntimeConfigWithSpeedMultiplier:@([self scrollSpeedMultiplier]) columnCount:value];
 }
 
 - (void)saveCurrentHostPreferenceValue:(id)value forKey:(NSString *)key {
@@ -405,11 +496,47 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     return nil;
 }
 
-- (void)writeRuntimeConfigWithSpeedMultiplier:(NSNumber *)speedMultiplier {
+- (NSNumber *)runtimeConfigColumnCount {
+    NSMutableArray<NSURL *> *configURLs = NSMutableArray.array;
+    NSMutableSet<NSString *> *seen = NSMutableSet.set;
+    void (^addConfigForCacheURL)(NSURL *) = ^(NSURL *cacheURL) {
+        if (cacheURL == nil) {
+            return;
+        }
+        NSURL *configURL = [self runtimeConfigURLForDisplayCacheFolderURL:cacheURL];
+        if (configURL.path.length == 0 || [seen containsObject:configURL.path]) {
+            return;
+        }
+        [seen addObject:configURL.path];
+        [configURLs addObject:configURL];
+    };
+
+    addConfigForCacheURL([self configuredDisplayCacheFolderURL]);
+    addConfigForCacheURL([[self applicationSupportFolderURL] URLByAppendingPathComponent:@"DisplayCache" isDirectory:YES]);
+
+    for (NSURL *configURL in configURLs) {
+        NSData *data = [NSData dataWithContentsOfURL:configURL];
+        if (data == nil) {
+            continue;
+        }
+        id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSDictionary *config = [object isKindOfClass:NSDictionary.class] ? object : nil;
+        id value = config[EagleColumnCountKey] ?: config[@"columnCount"];
+        if ([value respondsToSelector:@selector(integerValue)]) {
+            return @([value integerValue]);
+        }
+    }
+
+    return nil;
+}
+
+- (void)writeRuntimeConfigWithSpeedMultiplier:(NSNumber *)speedMultiplier columnCount:(NSNumber *)columnCount {
     NSDictionary *config = @{
         @"version": @1,
         EagleScrollSpeedMultiplierKey: @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
         @"scrollSpeedMultiplier": @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
+        EagleColumnCountKey: @([self clampedColumnCount:columnCount.integerValue]),
+        @"columnCount": @([self clampedColumnCount:columnCount.integerValue]),
         @"updatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970)
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
@@ -1045,7 +1172,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
           NSStringFromSize(self.bounds.size));
     [self prepareBackgroundLayer];
 
-    NSInteger columns = 2;
+    NSInteger columns = [self columnCount];
     NSInteger count = MIN(MaxVisibleCells, self.artworks.count);
     CGFloat baseTileWidth = floor((self.bounds.size.width - HorizontalGap * (CGFloat)(columns - 1)) / (CGFloat)columns);
 
@@ -1080,12 +1207,16 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         }
     }
 
-    CGFloat nextY[2] = { self.bounds.size.height + VerticalBleed, self.bounds.size.height + VerticalBleed };
+    NSMutableArray<NSNumber *> *nextY = NSMutableArray.array;
+    for (NSInteger column = 0; column < columns; column++) {
+        [nextY addObject:@(self.bounds.size.height + VerticalBleed)];
+    }
     for (NSInteger index = 0; index < count; index++) {
         NSInteger column = index % columns;
         EagleArtwork *artwork = initialArtworks[index];
         CGFloat tileWidth = [self widthForColumn:column columns:columns baseWidth:baseTileWidth];
         CGFloat tileHeight = [self heightForArtwork:artwork width:tileWidth];
+        CGFloat y = [nextY[column] doubleValue];
 
         EagleCell *cell = EagleCell.new;
         cell.artwork = artwork;
@@ -1093,7 +1224,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         cell.columnCount = columns;
         cell.frame = NSMakeRect(
             [self xForColumn:column columns:columns baseWidth:baseTileWidth],
-            nextY[column] - tileHeight,
+            y - tileHeight,
             tileWidth,
             tileHeight
         );
@@ -1101,7 +1232,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         [self createContentLayerForCell:cell];
         [self.cells addObject:cell];
         [self prepareImageForCell:cell synchronously:(index < InitialSynchronousCells)];
-        nextY[column] = NSMinY(cell.frame) - VerticalGap;
+        nextY[column] = @(NSMinY(cell.frame) - VerticalGap);
     }
 }
 

@@ -10,6 +10,20 @@ def run(cmd, cwd):
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
+def backup_defaults(project):
+    backup = pathlib.Path(tempfile.mkdtemp(prefix="EagleGridSaverDefaultsBackup-")) / "com.chaopi.EagleGridSaver.plist"
+    result = subprocess.run(["defaults", "export", "com.chaopi.EagleGridSaver", str(backup)], cwd=project)
+    return backup if result.returncode == 0 else None
+
+
+def restore_defaults(project, backup):
+    if backup is not None and backup.exists():
+        subprocess.run(["defaults", "import", "com.chaopi.EagleGridSaver", str(backup)], cwd=project, check=False)
+    else:
+        subprocess.run(["defaults", "delete", "com.chaopi.EagleGridSaver"], cwd=project, check=False)
+    subprocess.run(["killall", "cfprefsd"], cwd=project, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def write_ppm(path, color):
     w, h = 320, 200
     r, g, b = color
@@ -48,6 +62,7 @@ def main():
     support = pathlib.Path.home() / "Library/Application Support/EagleGridSaver"
     cache = support / "DisplayCache"
     backup = pathlib.Path(tempfile.mkdtemp(prefix="EagleGridSaverCacheBackup-")) / "DisplayCache"
+    defaults_backup = backup_defaults(project)
     had_cache = cache.exists()
     if had_cache:
         shutil.move(str(cache), str(backup))
@@ -89,8 +104,10 @@ def main():
         if "videos=1" not in result.stdout or "playableVideoURLs=1" not in result.stdout:
             raise SystemExit("video remap verification failed")
     finally:
+        restore_defaults(project, defaults_backup)
         shutil.rmtree(cache, ignore_errors=True)
         if had_cache:
+            shutil.rmtree(cache, ignore_errors=True)
             shutil.move(str(backup), str(cache))
 
 

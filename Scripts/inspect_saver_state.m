@@ -43,6 +43,11 @@ int main(int argc, const char * argv[]) {
             double speed = sendDouble(view, NSSelectorFromString(@"scrollSpeedMultiplier"));
             printf("scrollSpeedMultiplier=%.2f\n", speed);
         }
+        if ([view respondsToSelector:NSSelectorFromString(@"columnCount")]) {
+            NSInteger (*sendInteger)(id, SEL) = (NSInteger (*)(id, SEL))objc_msgSend;
+            NSInteger columnCount = sendInteger(view, NSSelectorFromString(@"columnCount"));
+            printf("columnCount=%ld\n", (long)columnCount);
+        }
         [view startAnimation];
         [view drawRect:view.bounds];
         for (NSInteger i = 0; i < 6; i++) {
@@ -51,6 +56,12 @@ int main(int argc, const char * argv[]) {
         }
 
         NSArray *artworks = [view valueForKey:@"artworks"];
+        NSArray *cells = [view valueForKey:@"cells"];
+        NSMutableSet *visibleColumns = NSMutableSet.set;
+        for (id cell in cells) {
+            [visibleColumns addObject:[cell valueForKey:@"column"]];
+        }
+        printf("visibleCellColumns=%lu\n", (unsigned long)visibleColumns.count);
         NSUInteger inspectedArtworkCount = 0;
         NSUInteger videoCount = 0;
         NSUInteger playableVideoCount = 0;

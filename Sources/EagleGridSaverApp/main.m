@@ -10,9 +10,12 @@ static NSString * const EagleLibraryPathKey = @"EagleGridSaver.libraryPath";
 static NSString * const EagleLibraryBookmarkKey = @"EagleGridSaver.libraryBookmark";
 static NSString * const EagleDisplayCachePathKey = @"EagleGridSaver.displayCachePath";
 static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollSpeedMultiplier";
+static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
 static NSString * const EagleDisplayCacheVersion = @"4";
 static CGFloat const MinScrollSpeedMultiplier = 0.25;
 static CGFloat const MaxScrollSpeedMultiplier = 10.0;
+static NSInteger const MinColumnCount = 1;
+static NSInteger const MaxColumnCount = 6;
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
@@ -22,6 +25,8 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *speedLabel;
 @property(nonatomic, strong) NSSlider *speedSlider;
+@property(nonatomic, strong) NSTextField *columnLabel;
+@property(nonatomic, strong) NSPopUpButton *columnPopUpButton;
 @property(nonatomic, strong) NSButton *updateIndexButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSButton *startScreenSaverButton;
@@ -58,7 +63,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 }
 
 - (void)buildWindow {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 390)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 430)
                                              styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
@@ -68,31 +73,31 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     NSView *content = self.window.contentView;
 
     NSTextField *title = [self labelWithString:@"Eagle Grid Saver" font:[NSFont systemFontOfSize:26 weight:NSFontWeightSemibold] color:NSColor.labelColor];
-    title.frame = NSMakeRect(32, 326, 360, 36);
+    title.frame = NSMakeRect(32, 366, 360, 36);
     [content addSubview:title];
 
     NSTextField *versionLabel = [self labelWithString:[self versionDisplayString] font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
-    versionLabel.frame = NSMakeRect(404, 332, 184, 20);
+    versionLabel.frame = NSMakeRect(404, 372, 184, 20);
     versionLabel.alignment = NSTextAlignmentRight;
     [content addSubview:versionLabel];
 
     NSTextField *description = [self labelWithString:@"Choose an Eagle .library folder. The app prepares a local display cache so the screen saver starts quickly and avoids black tiles." font:[NSFont systemFontOfSize:14 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
-    description.frame = NSMakeRect(32, 274, 556, 44);
+    description.frame = NSMakeRect(32, 314, 556, 44);
     description.maximumNumberOfLines = 2;
     [content addSubview:description];
 
     self.pathLabel = [self labelWithString:@"" font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular] color:NSColor.labelColor];
-    self.pathLabel.frame = NSMakeRect(32, 220, 556, 38);
+    self.pathLabel.frame = NSMakeRect(32, 260, 556, 38);
     self.pathLabel.maximumNumberOfLines = 2;
     self.pathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [content addSubview:self.pathLabel];
 
     self.speedLabel = [self labelWithString:@"" font:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium] color:NSColor.labelColor];
-    self.speedLabel.frame = NSMakeRect(32, 172, 160, 20);
+    self.speedLabel.frame = NSMakeRect(32, 212, 160, 20);
     [content addSubview:self.speedLabel];
 
     self.speedSlider = NSSlider.new;
-    self.speedSlider.frame = NSMakeRect(204, 168, 384, 24);
+    self.speedSlider.frame = NSMakeRect(204, 208, 384, 24);
     self.speedSlider.minValue = MinScrollSpeedMultiplier;
     self.speedSlider.maxValue = MaxScrollSpeedMultiplier;
     self.speedSlider.numberOfTickMarks = 11;
@@ -100,6 +105,18 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     self.speedSlider.target = self;
     self.speedSlider.action = @selector(speedChanged:);
     [content addSubview:self.speedSlider];
+
+    self.columnLabel = [self labelWithString:@"" font:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium] color:NSColor.labelColor];
+    self.columnLabel.frame = NSMakeRect(32, 172, 160, 22);
+    [content addSubview:self.columnLabel];
+
+    self.columnPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(204, 168, 120, 28) pullsDown:NO];
+    for (NSInteger column = MinColumnCount; column <= MaxColumnCount; column++) {
+        [self.columnPopUpButton addItemWithTitle:[NSString stringWithFormat:@"%ld", (long)column]];
+    }
+    self.columnPopUpButton.target = self;
+    self.columnPopUpButton.action = @selector(columnCountChanged:);
+    [content addSubview:self.columnPopUpButton];
 
     NSButton *chooseButton = [NSButton buttonWithTitle:@"Choose Eagle Library..." target:self action:@selector(chooseLibrary:)];
     chooseButton.frame = NSMakeRect(32, 118, 172, 34);
@@ -135,6 +152,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     self.statusLabel.maximumNumberOfLines = 2;
     [content addSubview:self.statusLabel];
     [self refreshSpeedControls];
+    [self refreshColumnControls];
 }
 
 - (NSTextField *)labelWithString:(NSString *)string font:(NSFont *)font color:(NSColor *)color {
@@ -216,10 +234,21 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     [self refreshSpeedControls];
 }
 
+- (void)columnCountChanged:(NSPopUpButton *)sender {
+    [self saveColumnCount:sender.indexOfSelectedItem + MinColumnCount];
+    [self refreshColumnControls];
+}
+
 - (void)refreshSpeedControls {
     CGFloat multiplier = [self scrollSpeedMultiplier];
     self.speedLabel.stringValue = [NSString stringWithFormat:@"Scroll Speed %.1fx", multiplier];
     self.speedSlider.doubleValue = multiplier;
+}
+
+- (void)refreshColumnControls {
+    NSInteger columnCount = [self columnCount];
+    self.columnLabel.stringValue = [NSString stringWithFormat:@"Columns %ld", (long)columnCount];
+    [self.columnPopUpButton selectItemAtIndex:columnCount - MinColumnCount];
 }
 
 - (void)openPreview:(id)sender {
@@ -362,6 +391,50 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     [self writeRuntimeConfigWithSpeedMultiplier:value];
 }
 
+- (NSInteger)columnCount {
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain],
+        [[NSUserDefaults alloc] initWithSuiteName:EagleDefaultsDomain]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        id value = [defaults objectForKey:EagleColumnCountKey];
+        if (value != nil) {
+            return [self clampedColumnCount:[value integerValue]];
+        }
+    }
+
+    id domainValue = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)EagleColumnCountKey, (CFStringRef)EagleDefaultsDomain));
+    if (domainValue != nil) {
+        return [self clampedColumnCount:[domainValue integerValue]];
+    }
+
+    return 2;
+}
+
+- (NSInteger)clampedColumnCount:(NSInteger)value {
+    return MIN(MaxColumnCount, MAX(MinColumnCount, value));
+}
+
+- (void)saveColumnCount:(NSInteger)columnCount {
+    NSNumber *value = @([self clampedColumnCount:columnCount]);
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain],
+        [[NSUserDefaults alloc] initWithSuiteName:EagleDefaultsDomain]
+    ];
+    for (NSUserDefaults *defaults in defaultsList) {
+        [defaults setObject:value forKey:EagleColumnCountKey];
+        [defaults synchronize];
+    }
+    CFPreferencesSetAppValue((CFStringRef)EagleColumnCountKey, (__bridge CFNumberRef)value, (CFStringRef)EagleDefaultsDomain);
+    CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+    [self saveCurrentHostPreferenceValue:value forKey:EagleColumnCountKey];
+    [self saveContainerPreferenceValue:value forKey:EagleColumnCountKey];
+    [self writeRuntimeConfigWithSpeedMultiplier:@([self scrollSpeedMultiplier])];
+}
+
 - (void)saveContainerPreferenceValue:(id)value forKey:(NSString *)key {
     for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
         NSURL *containerPreferencesURL = [self preferencesURLForScreenSaverContainerRootURL:containerRootURL];
@@ -479,10 +552,13 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 }
 
 - (void)writeRuntimeConfigWithSpeedMultiplier:(NSNumber *)speedMultiplier {
+    NSNumber *columnCount = @([self columnCount]);
     NSDictionary *config = @{
         @"version": @1,
         EagleScrollSpeedMultiplierKey: @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
         @"scrollSpeedMultiplier": @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
+        EagleColumnCountKey: columnCount,
+        @"columnCount": columnCount,
         @"updatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970)
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
@@ -741,11 +817,13 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     [self removeStaleCacheFilesInFolder:cacheURL keepingItems:items];
 
     NSNumber *speedMultiplier = @([self scrollSpeedMultiplier]);
+    NSNumber *columnCount = @([self columnCount]);
     NSDictionary *manifest = @{
         @"version": EagleDisplayCacheVersion,
         @"libraryPath": libraryURL.path ?: @"",
         @"generatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970),
         @"scrollSpeedMultiplier": speedMultiplier,
+        @"columnCount": columnCount,
         @"items": items
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:manifest options:0 error:nil];
@@ -771,6 +849,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     [self saveCurrentHostPreferenceValue:libraryURL.path ?: @"" forKey:EagleLibraryPathKey];
     [self saveCurrentHostPreferenceValue:cacheURL.path ?: @"" forKey:EagleDisplayCachePathKey];
     [self saveCurrentHostPreferenceValue:speedMultiplier forKey:EagleScrollSpeedMultiplierKey];
+    [self saveCurrentHostPreferenceValue:columnCount forKey:EagleColumnCountKey];
 
     NSUInteger mirroredContainerCount = 0;
     for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
@@ -789,6 +868,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
         containerPreferences[EagleLibraryPathKey] = libraryURL.path ?: @"";
         containerPreferences[EagleDisplayCachePathKey] = containerCacheURL.path ?: @"";
         containerPreferences[EagleScrollSpeedMultiplierKey] = speedMultiplier;
+        containerPreferences[EagleColumnCountKey] = columnCount;
         if (libraryBookmark != nil) {
             containerPreferences[EagleLibraryBookmarkKey] = libraryBookmark;
         }
