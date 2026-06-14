@@ -48,4 +48,9 @@ clang \
 cp "$PROJECT_DIR/AppResources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_DIR/AppResources/EagleGridSaver.icns" "$APP_DIR/Contents/Resources/EagleGridSaver.icns"
 
+codesign --force --deep --sign - "$SAVER_DIR"
+codesign --force --deep --sign - "$APP_DIR"
+codesign --verify --deep --strict "$SAVER_DIR"
+codesign --verify --deep --strict "$APP_DIR"
+
 echo "$SAVER_DIR"
