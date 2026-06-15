@@ -31,6 +31,7 @@
 @property(nonatomic) CFTimeInterval videoStartTime;
 @property(nonatomic) BOOL videoLayerReady;
 @property(nonatomic) BOOL videoPlaybackFailed;
+@property(nonatomic) BOOL videoLoopRestartPending;
 @end
 
 @implementation EagleCell
@@ -43,13 +44,14 @@
 @property(nonatomic, strong) NSMutableSet<NSURL *> *loadingURLs;
 @property(nonatomic) dispatch_queue_t imageQueue;
 @property(nonatomic) dispatch_queue_t scanQueue;
-@property(nonatomic, strong) CALayer *backgroundImageLayer;
 @property(nonatomic, strong) CALayer *contentLayerRoot;
 @property(nonatomic, strong) CATextLayer *statusTextLayer;
 @property(nonatomic, strong) NSWindow *optionsSheet;
 @property(nonatomic, strong) NSTextField *configurePathLabel;
 @property(nonatomic, strong) NSTextField *configureSpeedLabel;
 @property(nonatomic, strong) NSSlider *configureSpeedSlider;
+@property(nonatomic, strong) NSTextField *configureColumnLabel;
+@property(nonatomic, strong) NSPopUpButton *configureColumnPopUpButton;
 @property(nonatomic, copy) NSString *statusMessage;
 @property(nonatomic) NSSize lastLayoutSize;
 @property(nonatomic) NSInteger tick;
@@ -61,7 +63,7 @@
 
 @implementation EagleGridSaverView
 
-static NSInteger const MaxVisibleCells = 28;
+static NSInteger const MaxVisibleCells = 240;
 static NSInteger const InitialSynchronousCells = 4;
 static NSInteger const NetworkScanAssetLimit = 160;
 static CGFloat const HorizontalGap = 0.0;
@@ -70,6 +72,8 @@ static CGFloat const ScrollSpeedAtLegacyFrameRate = 0.225;
 static CGFloat const LegacyFrameRate = 24.0;
 static CGFloat const MinScrollSpeedMultiplier = 0.25;
 static CGFloat const MaxScrollSpeedMultiplier = 10.0;
+static NSInteger const MinColumnCount = 1;
+static NSInteger const MaxColumnCount = 6;
 static CGFloat const TileCornerRadius = 0.0;
 static CGFloat const TargetFrameRate = 60.0;
 static CGFloat const ImageDecodeMaxPixelSize = 1100.0;
@@ -80,6 +84,7 @@ static CGFloat const HorizontalBleed = 0.0;
 static CGFloat const VerticalBleed = 2.0;
 static NSString * const EagleDisplayCacheVersion = @"4";
 static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollSpeedMultiplier";
+static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
 
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     self = [super initWithFrame:frame isPreview:isPreview];
@@ -101,12 +106,6 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     self.animationTimeInterval = 1.0 / TargetFrameRate;
     self.wantsLayer = YES;
     self.layer.backgroundColor = NSColor.blackColor.CGColor;
-    self.backgroundImageLayer = CALayer.layer;
-    self.backgroundImageLayer.frame = self.bounds;
-    self.backgroundImageLayer.contentsGravity = kCAGravityResizeAspectFill;
-    self.backgroundImageLayer.masksToBounds = YES;
-    self.backgroundImageLayer.backgroundColor = NSColor.blackColor.CGColor;
-    [self.layer addSublayer:self.backgroundImageLayer];
 
     self.contentLayerRoot = CALayer.layer;
     self.contentLayerRoot.frame = self.bounds;
@@ -150,10 +149,11 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     if (self.optionsSheet != nil) {
         [self refreshConfigurePathLabel];
         [self refreshConfigureSpeedControls];
+        [self refreshConfigureColumnControls];
         return self.optionsSheet;
     }
 
-    NSWindow *sheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 310)
+    NSWindow *sheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 350)
                                                  styleMask:(NSWindowStyleMaskTitled)
                                                    backing:NSBackingStoreBuffered
                                                      defer:NO];
@@ -161,31 +161,31 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     NSView *content = sheet.contentView;
 
     NSTextField *title = [self configureLabel:@"Eagle Grid Saver" font:[NSFont systemFontOfSize:22.0 weight:NSFontWeightSemibold] color:NSColor.labelColor];
-    title.frame = NSMakeRect(28, 254, 300, 30);
+    title.frame = NSMakeRect(28, 294, 300, 30);
     [content addSubview:title];
 
     NSTextField *versionLabel = [self configureLabel:[self versionDisplayString] font:[NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
-    versionLabel.frame = NSMakeRect(344, 260, 188, 18);
+    versionLabel.frame = NSMakeRect(344, 300, 188, 18);
     versionLabel.alignment = NSTextAlignmentRight;
     [content addSubview:versionLabel];
 
     NSTextField *description = [self configureLabel:@"Choose the Eagle .library folder here, inside System Settings. This gives the actual screen saver host permission to read your library." font:[NSFont systemFontOfSize:13.0] color:NSColor.secondaryLabelColor];
-    description.frame = NSMakeRect(28, 204, 504, 42);
+    description.frame = NSMakeRect(28, 244, 504, 42);
     description.maximumNumberOfLines = 2;
     [content addSubview:description];
 
     self.configurePathLabel = [self configureLabel:@"" font:[NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightRegular] color:NSColor.labelColor];
-    self.configurePathLabel.frame = NSMakeRect(28, 156, 504, 34);
+    self.configurePathLabel.frame = NSMakeRect(28, 196, 504, 34);
     self.configurePathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     self.configurePathLabel.maximumNumberOfLines = 2;
     [content addSubview:self.configurePathLabel];
 
     self.configureSpeedLabel = [self configureLabel:@"" font:[NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium] color:NSColor.labelColor];
-    self.configureSpeedLabel.frame = NSMakeRect(28, 116, 180, 20);
+    self.configureSpeedLabel.frame = NSMakeRect(28, 156, 180, 20);
     [content addSubview:self.configureSpeedLabel];
 
     self.configureSpeedSlider = NSSlider.new;
-    self.configureSpeedSlider.frame = NSMakeRect(208, 112, 324, 24);
+    self.configureSpeedSlider.frame = NSMakeRect(208, 152, 324, 24);
     self.configureSpeedSlider.minValue = MinScrollSpeedMultiplier;
     self.configureSpeedSlider.maxValue = MaxScrollSpeedMultiplier;
     self.configureSpeedSlider.numberOfTickMarks = 11;
@@ -193,6 +193,18 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     self.configureSpeedSlider.target = self;
     self.configureSpeedSlider.action = @selector(configureSpeedChanged:);
     [content addSubview:self.configureSpeedSlider];
+
+    self.configureColumnLabel = [self configureLabel:@"" font:[NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium] color:NSColor.labelColor];
+    self.configureColumnLabel.frame = NSMakeRect(28, 116, 180, 22);
+    [content addSubview:self.configureColumnLabel];
+
+    self.configureColumnPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(208, 112, 120, 28) pullsDown:NO];
+    for (NSInteger column = MinColumnCount; column <= MaxColumnCount; column++) {
+        [self.configureColumnPopUpButton addItemWithTitle:[NSString stringWithFormat:@"%ld", (long)column]];
+    }
+    self.configureColumnPopUpButton.target = self;
+    self.configureColumnPopUpButton.action = @selector(configureColumnCountChanged:);
+    [content addSubview:self.configureColumnPopUpButton];
 
     NSButton *chooseButton = [NSButton buttonWithTitle:@"Choose Eagle Library..." target:self action:@selector(chooseLibraryFromConfigureSheet:)];
     chooseButton.frame = NSMakeRect(28, 54, 180, 34);
@@ -207,6 +219,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     self.optionsSheet = sheet;
     [self refreshConfigurePathLabel];
     [self refreshConfigureSpeedControls];
+    [self refreshConfigureColumnControls];
     return sheet;
 }
 
@@ -293,9 +306,27 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     self.configureSpeedSlider.doubleValue = multiplier;
 }
 
+- (void)refreshConfigureColumnControls {
+    NSInteger columnCount = [self columnCount];
+    self.configureColumnLabel.stringValue = [NSString stringWithFormat:@"Columns %ld", (long)columnCount];
+    [self.configureColumnPopUpButton selectItemAtIndex:columnCount - MinColumnCount];
+}
+
 - (void)configureSpeedChanged:(NSSlider *)sender {
     [self saveScrollSpeedMultiplier:sender.doubleValue];
     [self refreshConfigureSpeedControls];
+}
+
+- (void)configureColumnCountChanged:(NSPopUpButton *)sender {
+    NSInteger oldColumnCount = [self columnCount];
+    NSInteger newColumnCount = sender.indexOfSelectedItem + MinColumnCount;
+    [self saveColumnCount:newColumnCount];
+    [self refreshConfigureColumnControls];
+    if (newColumnCount != oldColumnCount) {
+        self.lastLayoutSize = NSZeroSize;
+        [self rebuildLayoutIfNeeded];
+        [self setNeedsDisplay:YES];
+    }
 }
 
 - (CGFloat)effectiveScrollSpeed {
@@ -356,7 +387,61 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     CFPreferencesSetAppValue((CFStringRef)EagleScrollSpeedMultiplierKey, (__bridge CFNumberRef)value, (CFStringRef)@"com.chaopi.EagleGridSaver");
     CFPreferencesAppSynchronize((CFStringRef)@"com.chaopi.EagleGridSaver");
     [self saveCurrentHostPreferenceValue:value forKey:EagleScrollSpeedMultiplierKey];
-    [self writeRuntimeConfigWithSpeedMultiplier:value];
+    [self writeRuntimeConfigWithSpeedMultiplier:value columnCount:@([self columnCount])];
+}
+
+- (NSInteger)columnCount {
+    NSNumber *runtimeValue = [self runtimeConfigColumnCount];
+    if (runtimeValue != nil) {
+        return [self clampedColumnCount:runtimeValue.integerValue];
+    }
+
+    NSDictionary *containerPreferences = [NSDictionary dictionaryWithContentsOfFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.chaopi.EagleGridSaver.plist"]];
+    id containerValue = containerPreferences[EagleColumnCountKey];
+    if (containerValue != nil) {
+        return [self clampedColumnCount:[containerValue integerValue]];
+    }
+
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        [ScreenSaverDefaults defaultsForModuleWithName:@"com.chaopi.EagleGridSaver"],
+        NSUserDefaults.standardUserDefaults,
+        [[NSUserDefaults alloc] initWithSuiteName:@"com.chaopi.EagleGridSaver"]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        id value = [defaults objectForKey:EagleColumnCountKey];
+        if (value != nil) {
+            return [self clampedColumnCount:[value integerValue]];
+        }
+    }
+
+    id domainValue = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)EagleColumnCountKey, (CFStringRef)@"com.chaopi.EagleGridSaver"));
+    if (domainValue != nil) {
+        return [self clampedColumnCount:[domainValue integerValue]];
+    }
+
+    return 2;
+}
+
+- (NSInteger)clampedColumnCount:(NSInteger)value {
+    return MIN(MaxColumnCount, MAX(MinColumnCount, value));
+}
+
+- (void)saveColumnCount:(NSInteger)columnCount {
+    NSNumber *value = @([self clampedColumnCount:columnCount]);
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        [ScreenSaverDefaults defaultsForModuleWithName:@"com.chaopi.EagleGridSaver"],
+        NSUserDefaults.standardUserDefaults,
+        [[NSUserDefaults alloc] initWithSuiteName:@"com.chaopi.EagleGridSaver"]
+    ];
+    for (NSUserDefaults *defaults in defaultsList) {
+        [defaults setObject:value forKey:EagleColumnCountKey];
+        [defaults synchronize];
+    }
+    CFPreferencesSetAppValue((CFStringRef)EagleColumnCountKey, (__bridge CFNumberRef)value, (CFStringRef)@"com.chaopi.EagleGridSaver");
+    CFPreferencesAppSynchronize((CFStringRef)@"com.chaopi.EagleGridSaver");
+    [self saveCurrentHostPreferenceValue:value forKey:EagleColumnCountKey];
+    [self writeRuntimeConfigWithSpeedMultiplier:@([self scrollSpeedMultiplier]) columnCount:value];
 }
 
 - (void)saveCurrentHostPreferenceValue:(id)value forKey:(NSString *)key {
@@ -405,11 +490,47 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     return nil;
 }
 
-- (void)writeRuntimeConfigWithSpeedMultiplier:(NSNumber *)speedMultiplier {
+- (NSNumber *)runtimeConfigColumnCount {
+    NSMutableArray<NSURL *> *configURLs = NSMutableArray.array;
+    NSMutableSet<NSString *> *seen = NSMutableSet.set;
+    void (^addConfigForCacheURL)(NSURL *) = ^(NSURL *cacheURL) {
+        if (cacheURL == nil) {
+            return;
+        }
+        NSURL *configURL = [self runtimeConfigURLForDisplayCacheFolderURL:cacheURL];
+        if (configURL.path.length == 0 || [seen containsObject:configURL.path]) {
+            return;
+        }
+        [seen addObject:configURL.path];
+        [configURLs addObject:configURL];
+    };
+
+    addConfigForCacheURL([self configuredDisplayCacheFolderURL]);
+    addConfigForCacheURL([[self applicationSupportFolderURL] URLByAppendingPathComponent:@"DisplayCache" isDirectory:YES]);
+
+    for (NSURL *configURL in configURLs) {
+        NSData *data = [NSData dataWithContentsOfURL:configURL];
+        if (data == nil) {
+            continue;
+        }
+        id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSDictionary *config = [object isKindOfClass:NSDictionary.class] ? object : nil;
+        id value = config[EagleColumnCountKey] ?: config[@"columnCount"];
+        if ([value respondsToSelector:@selector(integerValue)]) {
+            return @([value integerValue]);
+        }
+    }
+
+    return nil;
+}
+
+- (void)writeRuntimeConfigWithSpeedMultiplier:(NSNumber *)speedMultiplier columnCount:(NSNumber *)columnCount {
     NSDictionary *config = @{
         @"version": @1,
         EagleScrollSpeedMultiplierKey: @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
         @"scrollSpeedMultiplier": @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
+        EagleColumnCountKey: @([self clampedColumnCount:columnCount.integerValue]),
+        @"columnCount": @([self clampedColumnCount:columnCount.integerValue]),
         @"updatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970)
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
@@ -1031,7 +1152,6 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     [self clearVideoLayers];
     self.lastLayoutSize = self.bounds.size;
     self.scrollOffset = 0.0;
-    self.backgroundImageLayer.frame = self.bounds;
     [self.cells removeAllObjects];
 
     if (self.artworks.count == 0 || self.bounds.size.width < 100.0 || self.bounds.size.height < 100.0) {
@@ -1043,10 +1163,8 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     NSLog(@"EagleGridSaver: rebuilding layout artworks=%lu size=%@",
           (unsigned long)self.artworks.count,
           NSStringFromSize(self.bounds.size));
-    [self prepareBackgroundLayer];
 
-    NSInteger columns = 2;
-    NSInteger count = MIN(MaxVisibleCells, self.artworks.count);
+    NSInteger columns = [self columnCount];
     CGFloat baseTileWidth = floor((self.bounds.size.width - HorizontalGap * (CGFloat)(columns - 1)) / (CGFloat)columns);
 
     NSMutableArray<EagleArtwork *> *initialArtworks = NSMutableArray.array;
@@ -1065,27 +1183,39 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         if (!artwork.isVideo && ![initialArtworks containsObject:artwork]) {
             [initialArtworks addObject:artwork];
         }
-        if (initialArtworks.count >= count) {
-            break;
-        }
     }
-    if (initialArtworks.count < count) {
+    if (initialArtworks.count < self.artworks.count) {
         for (EagleArtwork *artwork in self.artworks) {
             if (![initialArtworks containsObject:artwork]) {
                 [initialArtworks addObject:artwork];
             }
-            if (initialArtworks.count >= count) {
-                break;
-            }
         }
     }
 
-    CGFloat nextY[2] = { self.bounds.size.height + VerticalBleed, self.bounds.size.height + VerticalBleed };
-    for (NSInteger index = 0; index < count; index++) {
+    NSMutableArray<NSNumber *> *nextY = NSMutableArray.array;
+    for (NSInteger column = 0; column < columns; column++) {
+        [nextY addObject:@(self.bounds.size.height + VerticalBleed)];
+    }
+
+    NSInteger index = 0;
+    CGFloat fillBottomY = -self.bounds.size.height * 0.35 - VerticalBleed;
+    while (self.cells.count < MaxVisibleCells) {
         NSInteger column = index % columns;
-        EagleArtwork *artwork = initialArtworks[index];
+        BOOL allColumnsFilled = YES;
+        for (NSNumber *y in nextY) {
+            if (y.doubleValue > fillBottomY) {
+                allColumnsFilled = NO;
+                break;
+            }
+        }
+        if (allColumnsFilled && self.cells.count >= columns) {
+            break;
+        }
+
+        EagleArtwork *artwork = initialArtworks[index % initialArtworks.count];
         CGFloat tileWidth = [self widthForColumn:column columns:columns baseWidth:baseTileWidth];
         CGFloat tileHeight = [self heightForArtwork:artwork width:tileWidth];
+        CGFloat y = [nextY[column] doubleValue];
 
         EagleCell *cell = EagleCell.new;
         cell.artwork = artwork;
@@ -1093,49 +1223,17 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         cell.columnCount = columns;
         cell.frame = NSMakeRect(
             [self xForColumn:column columns:columns baseWidth:baseTileWidth],
-            nextY[column] - tileHeight,
+            y - tileHeight,
             tileWidth,
             tileHeight
         );
         cell.phase = 1.0;
         [self createContentLayerForCell:cell];
         [self.cells addObject:cell];
-        [self prepareImageForCell:cell synchronously:(index < InitialSynchronousCells)];
-        nextY[column] = NSMinY(cell.frame) - VerticalGap;
+        [self prepareImageForCell:cell synchronously:[self shouldPrepareCellSynchronously:cell]];
+        nextY[column] = @(NSMinY(cell.frame) - VerticalGap);
+        index += 1;
     }
-}
-
-- (void)prepareBackgroundLayer {
-    if (self.backgroundImageLayer.contents != nil || self.artworks.count == 0) {
-        return;
-    }
-    if (self.libraryIsNetworkVolume) {
-        return;
-    }
-
-    EagleArtwork *backgroundArtwork = nil;
-    for (EagleArtwork *artwork in self.artworks) {
-        if (!artwork.isVideo) {
-            backgroundArtwork = artwork;
-            break;
-        }
-    }
-    if (backgroundArtwork == nil) {
-        backgroundArtwork = self.artworks.firstObject;
-    }
-
-    NSImage *image = [self decodedImageForArtwork:backgroundArtwork maxPixelSize:ImageDecodeMaxPixelSize];
-    if (image == nil) {
-        return;
-    }
-    CGImageRef imageRef = [image CGImageForProposedRect:NULL context:nil hints:nil];
-    if (imageRef == NULL) {
-        return;
-    }
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    self.backgroundImageLayer.contents = (__bridge id)imageRef;
-    [CATransaction commit];
 }
 
 - (void)advanceWaterfallByDelta:(CGFloat)delta {
@@ -1175,11 +1273,9 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         cell.artwork = next;
         cell.image = nil;
         cell.videoPlaybackFailed = NO;
-        cell.contentLayer.contents = nil;
-        cell.contentLayer.hidden = YES;
         [self updateLayerFrameForCell:cell];
         [visibleURLs addObject:next.url];
-        [self prepareImageForCell:cell];
+        [self prepareImageForCell:cell synchronously:YES];
     }
 }
 
@@ -1285,6 +1381,14 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         found = YES;
     }
     return found ? leadingY : self.bounds.size.height;
+}
+
+- (BOOL)shouldPrepareCellSynchronously:(EagleCell *)cell {
+    if (cell == nil) {
+        return NO;
+    }
+    NSRect firstViewportBand = NSInsetRect(self.bounds, 0.0, -VerticalBleed);
+    return NSIntersectsRect(cell.frame, firstViewportBand);
 }
 
 - (CGFloat)heightForArtwork:(EagleArtwork *)artwork width:(CGFloat)width {
@@ -1506,9 +1610,15 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     player.volume = 0.0;
     player.automaticallyWaitsToMinimizeStalling = self.libraryIsNetworkVolume;
 
+    __weak typeof(self) weakSelf = self;
+    __weak EagleCell *weakCell = cell;
     id endObserver = [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification object:item queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification * _Nonnull note) {
-        [player seekToTime:kCMTimeZero];
-        [player play];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        EagleCell *strongCell = weakCell;
+        if (strongSelf == nil || strongCell == nil || strongCell.player.currentItem != item) {
+            return;
+        }
+        [strongSelf restartVideoForCell:strongCell];
     }];
 
     cell.player = player;
@@ -1516,6 +1626,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     cell.videoEndObserver = endObserver;
     cell.videoStartTime = CACurrentMediaTime();
     cell.videoLayerReady = NO;
+    cell.videoLoopRestartPending = NO;
     AVPlayerLayer *playerLayer = [AVPlayerLayer playerLayerWithPlayer:player];
     playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
     playerLayer.masksToBounds = YES;
@@ -1524,7 +1635,6 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     cell.playerLayer = playerLayer;
     [cell.contentLayer addSublayer:playerLayer];
 
-    __weak EagleCell *weakCell = cell;
     [item addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionNew context:(__bridge void *)weakCell];
     [player play];
 }
@@ -1571,6 +1681,7 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     cell.videoOutput = nil;
     cell.videoStartTime = 0.0;
     cell.videoLayerReady = NO;
+    cell.videoLoopRestartPending = NO;
 }
 
 - (void)clearVideoLayers {
@@ -1583,25 +1694,16 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
 }
 
 - (void)updateVideoLayers {
-    EagleCell *activeVideoCell = nil;
     for (EagleCell *cell in self.cells) {
         if (!cell.artwork.isVideo) {
             [self teardownVideoForCell:cell];
             continue;
         }
-        if (activeVideoCell == nil && NSIntersectsRect(cell.frame, self.bounds)) {
-            activeVideoCell = cell;
-        }
-    }
-
-    for (EagleCell *cell in self.cells) {
-        if (!cell.artwork.isVideo) {
-            continue;
-        }
-        if (cell == activeVideoCell) {
+        if (NSIntersectsRect(cell.frame, self.bounds)) {
             [self ensureVideoForCell:cell];
             if (cell.playerLayer != nil) {
                 cell.playerLayer.frame = cell.contentLayer.bounds;
+                [self keepVideoLoopingForCell:cell];
                 if ([self videoHasRenderableFrameForCell:cell]) {
                     cell.videoLayerReady = YES;
                     cell.playerLayer.hidden = NO;
@@ -1623,6 +1725,46 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
     }
 }
 
+- (void)keepVideoLoopingForCell:(EagleCell *)cell {
+    AVPlayerItem *item = cell.player.currentItem;
+    if (item == nil || item.status != AVPlayerItemStatusReadyToPlay) {
+        return;
+    }
+
+    CMTime duration = item.duration;
+    if (!CMTIME_IS_NUMERIC(duration) || CMTimeCompare(duration, kCMTimeZero) <= 0) {
+        return;
+    }
+
+    CMTime currentTime = item.currentTime;
+    CMTime remaining = CMTimeSubtract(duration, currentTime);
+    if (CMTimeCompare(currentTime, duration) >= 0 ||
+        CMTimeCompare(remaining, CMTimeMakeWithSeconds(0.20, 600)) <= 0) {
+        [self restartVideoForCell:cell];
+    }
+}
+
+- (void)restartVideoForCell:(EagleCell *)cell {
+    if (cell.player == nil || cell.videoLoopRestartPending) {
+        return;
+    }
+
+    cell.videoLoopRestartPending = YES;
+    __weak EagleCell *weakCell = cell;
+    [cell.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero completionHandler:^(BOOL finished) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            EagleCell *strongCell = weakCell;
+            if (strongCell == nil) {
+                return;
+            }
+            strongCell.videoLoopRestartPending = NO;
+            if (finished && strongCell.player != nil) {
+                [strongCell.player play];
+            }
+        });
+    }];
+}
+
 - (BOOL)videoHasRenderableFrameForCell:(EagleCell *)cell {
     if (cell.videoOutput == nil || cell.player == nil) {
         return NO;
@@ -1638,42 +1780,8 @@ static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollS
         return cell.videoLayerReady;
     }
 
-    CGFloat brightness = [self averageBrightnessForPixelBuffer:pixelBuffer];
     CVPixelBufferRelease(pixelBuffer);
-    return brightness >= 0.025;
-}
-
-- (CGFloat)averageBrightnessForPixelBuffer:(CVPixelBufferRef)pixelBuffer {
-    if (CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
-        return 0.0;
-    }
-
-    const size_t width = CVPixelBufferGetWidth(pixelBuffer);
-    const size_t height = CVPixelBufferGetHeight(pixelBuffer);
-    const size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    const uint8_t *base = CVPixelBufferGetBaseAddress(pixelBuffer);
-    if (width == 0 || height == 0 || base == NULL) {
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        return 0.0;
-    }
-
-    const size_t samplesX = MIN((size_t)12, width);
-    const size_t samplesY = MIN((size_t)12, height);
-    double total = 0.0;
-    size_t count = 0;
-    for (size_t y = 0; y < samplesY; y++) {
-        size_t sampleY = (height * y + height / 2) / samplesY;
-        const uint8_t *row = base + sampleY * bytesPerRow;
-        for (size_t x = 0; x < samplesX; x++) {
-            size_t sampleX = (width * x + width / 2) / samplesX;
-            const uint8_t *pixel = row + sampleX * 4;
-            total += (0.0722 * pixel[0] + 0.7152 * pixel[1] + 0.2126 * pixel[2]) / 255.0;
-            count += 1;
-        }
-    }
-
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-    return count > 0 ? (CGFloat)(total / (double)count) : 0.0;
+    return YES;
 }
 
 - (CGRect)layerFrameForViewRect:(NSRect)viewRect {

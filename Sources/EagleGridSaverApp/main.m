@@ -10,9 +10,13 @@ static NSString * const EagleLibraryPathKey = @"EagleGridSaver.libraryPath";
 static NSString * const EagleLibraryBookmarkKey = @"EagleGridSaver.libraryBookmark";
 static NSString * const EagleDisplayCachePathKey = @"EagleGridSaver.displayCachePath";
 static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollSpeedMultiplier";
+static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
 static NSString * const EagleDisplayCacheVersion = @"4";
+static NSString * const AppleScreenSaverDomain = @"com.apple.screensaver";
 static CGFloat const MinScrollSpeedMultiplier = 0.25;
 static CGFloat const MaxScrollSpeedMultiplier = 10.0;
+static NSInteger const MinColumnCount = 1;
+static NSInteger const MaxColumnCount = 6;
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
@@ -20,8 +24,11 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 @property(nonatomic, strong) EagleGridSaverView *previewView;
 @property(nonatomic, strong) NSTextField *pathLabel;
 @property(nonatomic, strong) NSTextField *statusLabel;
+@property(nonatomic, strong) NSTextField *setupLabel;
 @property(nonatomic, strong) NSTextField *speedLabel;
 @property(nonatomic, strong) NSSlider *speedSlider;
+@property(nonatomic, strong) NSTextField *columnLabel;
+@property(nonatomic, strong) NSPopUpButton *columnPopUpButton;
 @property(nonatomic, strong) NSButton *updateIndexButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSButton *startScreenSaverButton;
@@ -58,7 +65,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 }
 
 - (void)buildWindow {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 390)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 500)
                                              styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
@@ -68,31 +75,36 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     NSView *content = self.window.contentView;
 
     NSTextField *title = [self labelWithString:@"Eagle Grid Saver" font:[NSFont systemFontOfSize:26 weight:NSFontWeightSemibold] color:NSColor.labelColor];
-    title.frame = NSMakeRect(32, 326, 360, 36);
+    title.frame = NSMakeRect(32, 436, 360, 36);
     [content addSubview:title];
 
     NSTextField *versionLabel = [self labelWithString:[self versionDisplayString] font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
-    versionLabel.frame = NSMakeRect(404, 332, 184, 20);
+    versionLabel.frame = NSMakeRect(404, 442, 184, 20);
     versionLabel.alignment = NSTextAlignmentRight;
     [content addSubview:versionLabel];
 
     NSTextField *description = [self labelWithString:@"Choose an Eagle .library folder. The app prepares a local display cache so the screen saver starts quickly and avoids black tiles." font:[NSFont systemFontOfSize:14 weight:NSFontWeightRegular] color:NSColor.secondaryLabelColor];
-    description.frame = NSMakeRect(32, 274, 556, 44);
+    description.frame = NSMakeRect(32, 384, 556, 44);
     description.maximumNumberOfLines = 2;
     [content addSubview:description];
 
+    self.setupLabel = [self labelWithString:@"Required before use: click Settings, set Use screen saver to Custom, then click Eagle Grid Saver in macOS System Settings. Until that manual selection is done, Start Screen Saver may still launch Tahoe or another Apple screen saver." font:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold] color:NSColor.systemOrangeColor];
+    self.setupLabel.frame = NSMakeRect(32, 314, 556, 54);
+    self.setupLabel.maximumNumberOfLines = 3;
+    [content addSubview:self.setupLabel];
+
     self.pathLabel = [self labelWithString:@"" font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular] color:NSColor.labelColor];
-    self.pathLabel.frame = NSMakeRect(32, 220, 556, 38);
+    self.pathLabel.frame = NSMakeRect(32, 260, 556, 38);
     self.pathLabel.maximumNumberOfLines = 2;
     self.pathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [content addSubview:self.pathLabel];
 
     self.speedLabel = [self labelWithString:@"" font:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium] color:NSColor.labelColor];
-    self.speedLabel.frame = NSMakeRect(32, 172, 160, 20);
+    self.speedLabel.frame = NSMakeRect(32, 212, 160, 20);
     [content addSubview:self.speedLabel];
 
     self.speedSlider = NSSlider.new;
-    self.speedSlider.frame = NSMakeRect(204, 168, 384, 24);
+    self.speedSlider.frame = NSMakeRect(204, 208, 384, 24);
     self.speedSlider.minValue = MinScrollSpeedMultiplier;
     self.speedSlider.maxValue = MaxScrollSpeedMultiplier;
     self.speedSlider.numberOfTickMarks = 11;
@@ -100,6 +112,18 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     self.speedSlider.target = self;
     self.speedSlider.action = @selector(speedChanged:);
     [content addSubview:self.speedSlider];
+
+    self.columnLabel = [self labelWithString:@"" font:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium] color:NSColor.labelColor];
+    self.columnLabel.frame = NSMakeRect(32, 172, 160, 22);
+    [content addSubview:self.columnLabel];
+
+    self.columnPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(204, 168, 120, 28) pullsDown:NO];
+    for (NSInteger column = MinColumnCount; column <= MaxColumnCount; column++) {
+        [self.columnPopUpButton addItemWithTitle:[NSString stringWithFormat:@"%ld", (long)column]];
+    }
+    self.columnPopUpButton.target = self;
+    self.columnPopUpButton.action = @selector(columnCountChanged:);
+    [content addSubview:self.columnPopUpButton];
 
     NSButton *chooseButton = [NSButton buttonWithTitle:@"Choose Eagle Library..." target:self action:@selector(chooseLibrary:)];
     chooseButton.frame = NSMakeRect(32, 118, 172, 34);
@@ -114,6 +138,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     self.settingsButton = [NSButton buttonWithTitle:@"Settings" target:self action:@selector(openScreenSaverSettings:)];
     self.settingsButton.frame = NSMakeRect(344, 118, 92, 34);
     self.settingsButton.bezelStyle = NSBezelStyleRounded;
+    self.settingsButton.toolTip = @"Required once: choose Eagle Grid Saver manually in macOS System Settings.";
     [content addSubview:self.settingsButton];
 
     self.startScreenSaverButton = [NSButton buttonWithTitle:@"Start Screen Saver" target:self action:@selector(startScreenSaver:)];
@@ -135,6 +160,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     self.statusLabel.maximumNumberOfLines = 2;
     [content addSubview:self.statusLabel];
     [self refreshSpeedControls];
+    [self refreshColumnControls];
 }
 
 - (NSTextField *)labelWithString:(NSString *)string font:(NSFont *)font color:(NSColor *)color {
@@ -216,10 +242,21 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     [self refreshSpeedControls];
 }
 
+- (void)columnCountChanged:(NSPopUpButton *)sender {
+    [self saveColumnCount:sender.indexOfSelectedItem + MinColumnCount];
+    [self refreshColumnControls];
+}
+
 - (void)refreshSpeedControls {
     CGFloat multiplier = [self scrollSpeedMultiplier];
     self.speedLabel.stringValue = [NSString stringWithFormat:@"Scroll Speed %.1fx", multiplier];
     self.speedSlider.doubleValue = multiplier;
+}
+
+- (void)refreshColumnControls {
+    NSInteger columnCount = [self columnCount];
+    self.columnLabel.stringValue = [NSString stringWithFormat:@"Columns %ld", (long)columnCount];
+    [self.columnPopUpButton selectItemAtIndex:columnCount - MinColumnCount];
 }
 
 - (void)openPreview:(id)sender {
@@ -248,13 +285,113 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
         self.statusLabel.stringValue = @"Index is still building. Please wait before starting the screen saver.";
         return;
     }
+    if (![self screenSaverPreferencesPointAtEagleGridSaver]) {
+        [self showManualSelectionAlert];
+        [self openScreenSaverSettings:nil];
+        return;
+    }
 
+    [self restartScreenSaverHostProcesses];
     NSURL *engineURL = [NSURL fileURLWithPath:@"/System/Library/CoreServices/ScreenSaverEngine.app"];
     NSError *error = nil;
     if (![NSWorkspace.sharedWorkspace openURL:engineURL]) {
         self.statusLabel.stringValue = @"Could not start ScreenSaverEngine.";
         NSLog(@"EagleGridSaverApp: failed to open %@: %@", engineURL.path, error.localizedDescription);
+    } else {
+        self.statusLabel.stringValue = @"Starting screen saver. If macOS shows Tahoe or another Apple screen saver, open Settings and manually choose Eagle Grid Saver again.";
     }
+}
+
+- (BOOL)selectEagleGridSaverModule {
+    NSURL *saverURL = [self installedSaverURL];
+    if (saverURL == nil) {
+        self.statusLabel.stringValue = @"EagleGridSaver.saver is not installed. Reinstall the package, then open this app again.";
+        return NO;
+    }
+
+    NSDictionary *moduleDict = @{
+        @"moduleName": @"Eagle Grid Saver",
+        @"path": saverURL.path,
+        @"type": @0
+    };
+
+    CFPreferencesSetAppValue(CFSTR("moduleDict"),
+                             (__bridge CFPropertyListRef)moduleDict,
+                             (CFStringRef)AppleScreenSaverDomain);
+    CFPreferencesAppSynchronize((CFStringRef)AppleScreenSaverDomain);
+    CFPreferencesSetValue(CFSTR("moduleDict"),
+                          (__bridge CFPropertyListRef)moduleDict,
+                          (CFStringRef)AppleScreenSaverDomain,
+                          kCFPreferencesCurrentUser,
+                          kCFPreferencesCurrentHost);
+    CFPreferencesSynchronize((CFStringRef)AppleScreenSaverDomain,
+                             kCFPreferencesCurrentUser,
+                             kCFPreferencesCurrentHost);
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Eagle Grid Saver is selected. Screen saver: %@", saverURL.path];
+    return YES;
+}
+
+- (BOOL)screenSaverPreferencesPointAtEagleGridSaver {
+    NSDictionary *moduleDict = CFBridgingRelease(CFPreferencesCopyValue(CFSTR("moduleDict"),
+                                                                        (CFStringRef)AppleScreenSaverDomain,
+                                                                        kCFPreferencesCurrentUser,
+                                                                        kCFPreferencesCurrentHost));
+    if (![moduleDict isKindOfClass:NSDictionary.class]) {
+        moduleDict = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("moduleDict"), (CFStringRef)AppleScreenSaverDomain));
+    }
+    if (![moduleDict isKindOfClass:NSDictionary.class]) {
+        return NO;
+    }
+    NSString *moduleName = [moduleDict[@"moduleName"] isKindOfClass:NSString.class] ? moduleDict[@"moduleName"] : @"";
+    NSString *path = [moduleDict[@"path"] isKindOfClass:NSString.class] ? moduleDict[@"path"] : @"";
+    NSURL *installedSaverURL = [self installedSaverURL];
+    return [moduleName isEqualToString:@"Eagle Grid Saver"] && installedSaverURL != nil && [path isEqualToString:installedSaverURL.path];
+}
+
+- (NSURL *)installedSaverURL {
+    NSString *userPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Screen Savers/EagleGridSaver.saver"];
+    NSString *systemPath = @"/Library/Screen Savers/EagleGridSaver.saver";
+    NSArray<NSString *> *candidatePaths = @[systemPath, userPath];
+    return [self installedSaverURLFromCandidatePaths:candidatePaths preferFirstExisting:YES];
+}
+
+- (NSURL *)installedSaverURLFromCandidatePaths:(NSArray<NSString *> *)candidatePaths {
+    return [self installedSaverURLFromCandidatePaths:candidatePaths preferFirstExisting:NO];
+}
+
+- (NSURL *)installedSaverURLFromCandidatePaths:(NSArray<NSString *> *)candidatePaths preferFirstExisting:(BOOL)preferFirstExisting {
+    NSURL *bestURL = nil;
+    NSDate *bestDate = nil;
+    for (NSString *path in candidatePaths) {
+        BOOL isDirectory = NO;
+        if ([NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory) {
+            NSURL *url = [NSURL fileURLWithPath:path isDirectory:YES];
+            if (preferFirstExisting) {
+                return url;
+            }
+            NSDate *date = [self modificationDateForSaverURL:url];
+            if (bestURL == nil || (date != nil && bestDate != nil && [date compare:bestDate] == NSOrderedDescending) || (date != nil && bestDate == nil)) {
+                bestURL = url;
+                bestDate = date;
+            }
+        }
+    }
+    return bestURL;
+}
+
+- (NSDate *)modificationDateForSaverURL:(NSURL *)saverURL {
+    NSArray<NSURL *> *candidateURLs = @[
+        [[saverURL URLByAppendingPathComponent:@"Contents/MacOS" isDirectory:YES] URLByAppendingPathComponent:@"EagleGridSaver"],
+        saverURL
+    ];
+    for (NSURL *candidateURL in candidateURLs) {
+        NSDictionary<NSFileAttributeKey, id> *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:candidateURL.path error:nil];
+        NSDate *date = [attributes[NSFileModificationDate] isKindOfClass:NSDate.class] ? attributes[NSFileModificationDate] : nil;
+        if (date != nil) {
+            return date;
+        }
+    }
+    return nil;
 }
 
 - (void)saveValue:(NSString *)path bookmark:(NSData *)bookmark toDefaults:(NSUserDefaults *)defaults {
@@ -362,6 +499,50 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     [self writeRuntimeConfigWithSpeedMultiplier:value];
 }
 
+- (NSInteger)columnCount {
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain],
+        [[NSUserDefaults alloc] initWithSuiteName:EagleDefaultsDomain]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        id value = [defaults objectForKey:EagleColumnCountKey];
+        if (value != nil) {
+            return [self clampedColumnCount:[value integerValue]];
+        }
+    }
+
+    id domainValue = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)EagleColumnCountKey, (CFStringRef)EagleDefaultsDomain));
+    if (domainValue != nil) {
+        return [self clampedColumnCount:[domainValue integerValue]];
+    }
+
+    return 2;
+}
+
+- (NSInteger)clampedColumnCount:(NSInteger)value {
+    return MIN(MaxColumnCount, MAX(MinColumnCount, value));
+}
+
+- (void)saveColumnCount:(NSInteger)columnCount {
+    NSNumber *value = @([self clampedColumnCount:columnCount]);
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain],
+        [[NSUserDefaults alloc] initWithSuiteName:EagleDefaultsDomain]
+    ];
+    for (NSUserDefaults *defaults in defaultsList) {
+        [defaults setObject:value forKey:EagleColumnCountKey];
+        [defaults synchronize];
+    }
+    CFPreferencesSetAppValue((CFStringRef)EagleColumnCountKey, (__bridge CFNumberRef)value, (CFStringRef)EagleDefaultsDomain);
+    CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+    [self saveCurrentHostPreferenceValue:value forKey:EagleColumnCountKey];
+    [self saveContainerPreferenceValue:value forKey:EagleColumnCountKey];
+    [self writeRuntimeConfigWithSpeedMultiplier:@([self scrollSpeedMultiplier])];
+}
+
 - (void)saveContainerPreferenceValue:(id)value forKey:(NSString *)key {
     for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
         NSURL *containerPreferencesURL = [self preferencesURLForScreenSaverContainerRootURL:containerRootURL];
@@ -383,6 +564,27 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
                              kCFPreferencesCurrentHost);
 }
 
+- (void)restartScreenSaverHostProcesses {
+    NSArray<NSString *> *processNames = @[
+        @"legacyScreenSaver",
+        @"ScreenSaverEngine",
+        @"WallpaperAgent",
+        @"cfprefsd"
+    ];
+    for (NSString *processName in processNames) {
+        NSTask *task = NSTask.new;
+        task.launchPath = @"/usr/bin/killall";
+        task.arguments = @[processName];
+        task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+        task.standardError = NSFileHandle.fileHandleWithNullDevice;
+        @try {
+            [task launch];
+            [task waitUntilExit];
+        } @catch (__unused NSException *exception) {
+        }
+    }
+}
+
 - (NSURL *)configuredLibraryURL {
     NSArray<NSUserDefaults *> *defaultsList = @[
         NSUserDefaults.standardUserDefaults,
@@ -390,7 +592,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     ];
 
     for (NSUserDefaults *defaults in defaultsList) {
-        NSData *bookmarkData = [defaults dataForKey:EagleLibraryBookmarkKey];
+        NSData *bookmarkData = [self libraryBookmarkDataFromDefaults:defaults];
         NSURL *url = [self URLFromBookmarkData:bookmarkData];
         if (url != nil) {
             return url;
@@ -416,6 +618,31 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     }
 
     return nil;
+}
+
+- (NSData *)configuredLibraryBookmarkData {
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain]
+    ];
+    for (NSUserDefaults *defaults in defaultsList) {
+        NSData *bookmarkData = [self libraryBookmarkDataFromDefaults:defaults];
+        if (bookmarkData.length > 0) {
+            return bookmarkData;
+        }
+    }
+
+    NSData *domainBookmarkData = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)EagleLibraryBookmarkKey, (CFStringRef)EagleDefaultsDomain));
+    if ([domainBookmarkData isKindOfClass:NSData.class] && domainBookmarkData.length > 0) {
+        return domainBookmarkData;
+    }
+
+    return nil;
+}
+
+- (NSData *)libraryBookmarkDataFromDefaults:(NSUserDefaults *)defaults {
+    id value = [defaults objectForKey:EagleLibraryBookmarkKey];
+    return [value isKindOfClass:NSData.class] ? value : nil;
 }
 
 - (NSURL *)URLFromBookmarkData:(NSData *)bookmarkData {
@@ -458,10 +685,13 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 }
 
 - (void)writeRuntimeConfigWithSpeedMultiplier:(NSNumber *)speedMultiplier {
+    NSNumber *columnCount = @([self columnCount]);
     NSDictionary *config = @{
         @"version": @1,
         EagleScrollSpeedMultiplierKey: @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
         @"scrollSpeedMultiplier": @([self clampedScrollSpeedMultiplier:speedMultiplier.doubleValue]),
+        EagleColumnCountKey: columnCount,
+        @"columnCount": columnCount,
         @"updatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970)
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
@@ -485,6 +715,8 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     NSURL *homeURL = NSFileManager.defaultManager.homeDirectoryForCurrentUser;
     NSURL *containersURL = [homeURL URLByAppendingPathComponent:@"Library/Containers" isDirectory:YES];
     NSArray<NSString *> *knownContainerNames = @[
+        @"com.apple.ScreenSaver-Settings.extension",
+        @"com.apple.settings-intents.ScreenSaverIntents",
         @"com.apple.ScreenSaver.Engine.legacyScreenSaver",
         @"com.apple.ScreenSaver.Engine.legacyScreenSaver.x86-64",
         @"com.apple.ScreenSaver.Engine"
@@ -507,7 +739,10 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     NSArray<NSURL *> *children = [NSFileManager.defaultManager contentsOfDirectoryAtURL:containersURL includingPropertiesForKeys:@[NSURLIsDirectoryKey] options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
     for (NSURL *child in children) {
         NSString *name = child.lastPathComponent;
-        if ([name hasPrefix:@"com.apple.ScreenSaver.Engine"] || [name containsString:@"legacyScreenSaver"]) {
+        if ([name hasPrefix:@"com.apple.ScreenSaver.Engine"] ||
+            [name isEqualToString:@"com.apple.ScreenSaver-Settings.extension"] ||
+            [name isEqualToString:@"com.apple.settings-intents.ScreenSaverIntents"] ||
+            [name containsString:@"legacyScreenSaver"]) {
             addRoot(child);
         }
     }
@@ -569,6 +804,7 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     self.progressIndicator.hidden = NO;
     self.progressIndicator.doubleValue = 0;
     self.statusLabel.stringValue = @"Building index. Please wait...";
+    [self restartScreenSaverHostProcesses];
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.indexQueue, ^{
@@ -658,6 +894,15 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
         return NO;
     }
 
+    NSData *libraryBookmark = [self configuredLibraryBookmarkData];
+    NSNumber *speedMultiplier = @([self scrollSpeedMultiplier]);
+    NSNumber *columnCount = @([self columnCount]);
+    [self persistRuntimeSelectionForLibraryURL:libraryURL
+                                libraryBookmark:libraryBookmark
+                                      cacheURL:cacheURL
+                               speedMultiplier:speedMultiplier
+                                   columnCount:columnCount];
+
     for (NSURL *fileURL in mediaFiles) {
         @autoreleasepool {
             NSString *extension = fileURL.pathExtension.lowercaseString;
@@ -718,12 +963,12 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 
     [self removeStaleCacheFilesInFolder:cacheURL keepingItems:items];
 
-    NSNumber *speedMultiplier = @([self scrollSpeedMultiplier]);
     NSDictionary *manifest = @{
         @"version": EagleDisplayCacheVersion,
         @"libraryPath": libraryURL.path ?: @"",
         @"generatedAt": @((NSInteger)NSDate.date.timeIntervalSince1970),
         @"scrollSpeedMultiplier": speedMultiplier,
+        @"columnCount": columnCount,
         @"items": items
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:manifest options:0 error:nil];
@@ -738,37 +983,24 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
     }
     [self writeRuntimeConfigWithSpeedMultiplier:speedMultiplier];
 
-    NSUserDefaults *standardDefaults = NSUserDefaults.standardUserDefaults;
-    [standardDefaults setObject:cacheURL.path forKey:EagleDisplayCachePathKey];
-    [standardDefaults synchronize];
-    ScreenSaverDefaults *screenSaverDefaults = [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain];
-    [screenSaverDefaults setObject:cacheURL.path forKey:EagleDisplayCachePathKey];
-    [screenSaverDefaults synchronize];
-    CFPreferencesSetAppValue((CFStringRef)EagleDisplayCachePathKey, (__bridge CFStringRef)cacheURL.path, (CFStringRef)EagleDefaultsDomain);
-    CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
-    [self saveCurrentHostPreferenceValue:libraryURL.path ?: @"" forKey:EagleLibraryPathKey];
-    [self saveCurrentHostPreferenceValue:cacheURL.path ?: @"" forKey:EagleDisplayCachePathKey];
-    [self saveCurrentHostPreferenceValue:speedMultiplier forKey:EagleScrollSpeedMultiplierKey];
-
     NSUInteger mirroredContainerCount = 0;
     for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
         NSURL *containerPreferencesURL = [self preferencesURLForScreenSaverContainerRootURL:containerRootURL];
         NSDictionary *oldContainerPreferences = [NSDictionary dictionaryWithContentsOfURL:containerPreferencesURL];
-        NSData *libraryBookmark = [oldContainerPreferences[EagleLibraryBookmarkKey] isKindOfClass:NSData.class] ? oldContainerPreferences[EagleLibraryBookmarkKey] : nil;
+        NSData *containerLibraryBookmark = [oldContainerPreferences[EagleLibraryBookmarkKey] isKindOfClass:NSData.class] ? oldContainerPreferences[EagleLibraryBookmarkKey] : libraryBookmark;
         [self clearStaleScreenSaverStateForContainerRootURL:containerRootURL];
         NSURL *containerCacheURL = [self displayCacheFolderURLForScreenSaverContainerRootURL:containerRootURL];
         BOOL mirrored = [self mirrorDisplayCacheFromFolder:cacheURL toFolder:containerCacheURL keepingItems:items];
-        if (!mirrored) {
-            continue;
+        if (mirrored) {
+            mirroredContainerCount += 1;
         }
-
-        mirroredContainerCount += 1;
         NSMutableDictionary *containerPreferences = [NSMutableDictionary dictionaryWithContentsOfURL:containerPreferencesURL] ?: NSMutableDictionary.dictionary;
         containerPreferences[EagleLibraryPathKey] = libraryURL.path ?: @"";
-        containerPreferences[EagleDisplayCachePathKey] = containerCacheURL.path ?: @"";
+        containerPreferences[EagleDisplayCachePathKey] = mirrored ? (containerCacheURL.path ?: @"") : (cacheURL.path ?: @"");
         containerPreferences[EagleScrollSpeedMultiplierKey] = speedMultiplier;
-        if (libraryBookmark != nil) {
-            containerPreferences[EagleLibraryBookmarkKey] = libraryBookmark;
+        containerPreferences[EagleColumnCountKey] = columnCount;
+        if (containerLibraryBookmark.length > 0) {
+            containerPreferences[EagleLibraryBookmarkKey] = containerLibraryBookmark;
         }
         [NSFileManager.defaultManager createDirectoryAtURL:containerPreferencesURL.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         [containerPreferences writeToURL:containerPreferencesURL atomically:YES];
@@ -788,6 +1020,57 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
                                         mirroredContainerCount == 1 ? @"" : @"s"];
     });
     return succeeded > 0;
+}
+
+- (void)persistRuntimeSelectionForLibraryURL:(NSURL *)libraryURL
+                            libraryBookmark:(NSData *)libraryBookmark
+                                    cacheURL:(NSURL *)cacheURL
+                             speedMultiplier:(NSNumber *)speedMultiplier
+                                 columnCount:(NSNumber *)columnCount {
+    NSUserDefaults *standardDefaults = NSUserDefaults.standardUserDefaults;
+    [standardDefaults setObject:libraryURL.path ?: @"" forKey:EagleLibraryPathKey];
+    [standardDefaults setObject:cacheURL.path ?: @"" forKey:EagleDisplayCachePathKey];
+    [standardDefaults setObject:speedMultiplier forKey:EagleScrollSpeedMultiplierKey];
+    [standardDefaults setObject:columnCount forKey:EagleColumnCountKey];
+    if (libraryBookmark.length > 0) {
+        [standardDefaults setObject:libraryBookmark forKey:EagleLibraryBookmarkKey];
+    }
+    [standardDefaults synchronize];
+
+    ScreenSaverDefaults *screenSaverDefaults = [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain];
+    [screenSaverDefaults setObject:libraryURL.path ?: @"" forKey:EagleLibraryPathKey];
+    [screenSaverDefaults setObject:cacheURL.path ?: @"" forKey:EagleDisplayCachePathKey];
+    [screenSaverDefaults setObject:speedMultiplier forKey:EagleScrollSpeedMultiplierKey];
+    [screenSaverDefaults setObject:columnCount forKey:EagleColumnCountKey];
+    if (libraryBookmark.length > 0) {
+        [screenSaverDefaults setObject:libraryBookmark forKey:EagleLibraryBookmarkKey];
+    }
+    [screenSaverDefaults synchronize];
+
+    CFPreferencesSetAppValue((CFStringRef)EagleLibraryPathKey, (__bridge CFStringRef)(libraryURL.path ?: @""), (CFStringRef)EagleDefaultsDomain);
+    CFPreferencesSetAppValue((CFStringRef)EagleDisplayCachePathKey, (__bridge CFStringRef)(cacheURL.path ?: @""), (CFStringRef)EagleDefaultsDomain);
+    CFPreferencesSetAppValue((CFStringRef)EagleScrollSpeedMultiplierKey, (__bridge CFNumberRef)speedMultiplier, (CFStringRef)EagleDefaultsDomain);
+    CFPreferencesSetAppValue((CFStringRef)EagleColumnCountKey, (__bridge CFNumberRef)columnCount, (CFStringRef)EagleDefaultsDomain);
+    if (libraryBookmark.length > 0) {
+        CFPreferencesSetAppValue((CFStringRef)EagleLibraryBookmarkKey, (__bridge CFDataRef)libraryBookmark, (CFStringRef)EagleDefaultsDomain);
+    }
+    CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+
+    [self saveCurrentHostPreferenceValue:libraryURL.path ?: @"" forKey:EagleLibraryPathKey];
+    [self saveCurrentHostPreferenceValue:cacheURL.path ?: @"" forKey:EagleDisplayCachePathKey];
+    [self saveCurrentHostPreferenceValue:speedMultiplier forKey:EagleScrollSpeedMultiplierKey];
+    [self saveCurrentHostPreferenceValue:columnCount forKey:EagleColumnCountKey];
+    if (libraryBookmark.length > 0) {
+        [self saveCurrentHostPreferenceValue:libraryBookmark forKey:EagleLibraryBookmarkKey];
+    }
+
+    [self saveContainerPreferenceValue:libraryURL.path ?: @"" forKey:EagleLibraryPathKey];
+    [self saveContainerPreferenceValue:cacheURL.path ?: @"" forKey:EagleDisplayCachePathKey];
+    [self saveContainerPreferenceValue:speedMultiplier forKey:EagleScrollSpeedMultiplierKey];
+    [self saveContainerPreferenceValue:columnCount forKey:EagleColumnCountKey];
+    if (libraryBookmark.length > 0) {
+        [self saveContainerPreferenceValue:libraryBookmark forKey:EagleLibraryBookmarkKey];
+    }
 }
 
 - (BOOL)mirrorDisplayCacheFromFolder:(NSURL *)sourceFolderURL toFolder:(NSURL *)targetFolderURL keepingItems:(NSArray<NSDictionary *> *)items {
@@ -1046,8 +1329,20 @@ static CGFloat const MaxScrollSpeedMultiplier = 10.0;
 }
 
 - (void)openScreenSaverSettings:(id)sender {
+    [self selectEagleGridSaverModule];
+    if (sender != nil) {
+        [self showManualSelectionAlert];
+    }
     NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.ScreenSaver-Settings.extension"];
     [NSWorkspace.sharedWorkspace openURL:url];
+}
+
+- (void)showManualSelectionAlert {
+    NSAlert *alert = NSAlert.new;
+    alert.messageText = @"Choose Eagle Grid Saver in macOS Settings";
+    alert.informativeText = @"macOS does not let this app silently replace the selected system screen saver. In System Settings, set Use screen saver to Custom and click Eagle Grid Saver once. Until you do this, Start Screen Saver may still launch Tahoe or another Apple screen saver. After this manual step, speed, columns, and index rebuilds work from this app.";
+    [alert addButtonWithTitle:@"Open Settings"];
+    [alert runModal];
 }
 
 @end
@@ -1060,6 +1355,23 @@ int main(int argc, const char * argv[]) {
             NSURL *libraryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[2]]];
             BOOL ok = [delegate buildDisplayCacheForLibrary:libraryURL];
             return ok ? 0 : 1;
+        }
+        if (argc == 2 && strcmp(argv[1], "--select-saver") == 0) {
+            AppDelegate *delegate = AppDelegate.new;
+            return [delegate selectEagleGridSaverModule] ? 0 : 1;
+        }
+        if (argc > 2 && strcmp(argv[1], "--preferred-saver-path") == 0) {
+            NSMutableArray<NSString *> *paths = NSMutableArray.array;
+            for (int index = 2; index < argc; index++) {
+                [paths addObject:[NSString stringWithUTF8String:argv[index]]];
+            }
+            AppDelegate *delegate = AppDelegate.new;
+            NSURL *url = [delegate installedSaverURLFromCandidatePaths:paths];
+            if (url == nil) {
+                return 1;
+            }
+            printf("%s\n", url.path.UTF8String);
+            return 0;
         }
 
         NSApplication *application = NSApplication.sharedApplication;
