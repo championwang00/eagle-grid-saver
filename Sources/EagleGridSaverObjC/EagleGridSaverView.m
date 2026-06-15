@@ -31,6 +31,7 @@
 @property(nonatomic) CFTimeInterval videoStartTime;
 @property(nonatomic) BOOL videoLayerReady;
 @property(nonatomic) BOOL videoPlaybackFailed;
+@property(nonatomic) BOOL videoLoopRestartPending;
 @end
 
 @implementation EagleCell
@@ -43,7 +44,6 @@
 @property(nonatomic, strong) NSMutableSet<NSURL *> *loadingURLs;
 @property(nonatomic) dispatch_queue_t imageQueue;
 @property(nonatomic) dispatch_queue_t scanQueue;
-@property(nonatomic, strong) CALayer *backgroundImageLayer;
 @property(nonatomic, strong) CALayer *contentLayerRoot;
 @property(nonatomic, strong) CATextLayer *statusTextLayer;
 @property(nonatomic, strong) NSWindow *optionsSheet;
@@ -63,7 +63,7 @@
 
 @implementation EagleGridSaverView
 
-static NSInteger const MaxVisibleCells = 28;
+static NSInteger const MaxVisibleCells = 240;
 static NSInteger const InitialSynchronousCells = 4;
 static NSInteger const NetworkScanAssetLimit = 160;
 static CGFloat const HorizontalGap = 0.0;
@@ -106,12 +106,6 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     self.animationTimeInterval = 1.0 / TargetFrameRate;
     self.wantsLayer = YES;
     self.layer.backgroundColor = NSColor.blackColor.CGColor;
-    self.backgroundImageLayer = CALayer.layer;
-    self.backgroundImageLayer.frame = self.bounds;
-    self.backgroundImageLayer.contentsGravity = kCAGravityResizeAspectFill;
-    self.backgroundImageLayer.masksToBounds = YES;
-    self.backgroundImageLayer.backgroundColor = NSColor.blackColor.CGColor;
-    [self.layer addSublayer:self.backgroundImageLayer];
 
     self.contentLayerRoot = CALayer.layer;
     self.contentLayerRoot.frame = self.bounds;
@@ -1158,7 +1152,6 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     [self clearVideoLayers];
     self.lastLayoutSize = self.bounds.size;
     self.scrollOffset = 0.0;
-    self.backgroundImageLayer.frame = self.bounds;
     [self.cells removeAllObjects];
 
     if (self.artworks.count == 0 || self.bounds.size.width < 100.0 || self.bounds.size.height < 100.0) {
@@ -1170,10 +1163,8 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     NSLog(@"EagleGridSaver: rebuilding layout artworks=%lu size=%@",
           (unsigned long)self.artworks.count,
           NSStringFromSize(self.bounds.size));
-    [self prepareBackgroundLayer];
 
     NSInteger columns = [self columnCount];
-    NSInteger count = MIN(MaxVisibleCells, self.artworks.count);
     CGFloat baseTileWidth = floor((self.bounds.size.width - HorizontalGap * (CGFloat)(columns - 1)) / (CGFloat)columns);
 
     NSMutableArray<EagleArtwork *> *initialArtworks = NSMutableArray.array;
@@ -1192,17 +1183,11 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
         if (!artwork.isVideo && ![initialArtworks containsObject:artwork]) {
             [initialArtworks addObject:artwork];
         }
-        if (initialArtworks.count >= count) {
-            break;
-        }
     }
-    if (initialArtworks.count < count) {
+    if (initialArtworks.count < self.artworks.count) {
         for (EagleArtwork *artwork in self.artworks) {
             if (![initialArtworks containsObject:artwork]) {
                 [initialArtworks addObject:artwork];
-            }
-            if (initialArtworks.count >= count) {
-                break;
             }
         }
     }
@@ -1211,9 +1196,23 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     for (NSInteger column = 0; column < columns; column++) {
         [nextY addObject:@(self.bounds.size.height + VerticalBleed)];
     }
-    for (NSInteger index = 0; index < count; index++) {
+
+    NSInteger index = 0;
+    CGFloat fillBottomY = -self.bounds.size.height * 0.35 - VerticalBleed;
+    while (self.cells.count < MaxVisibleCells) {
         NSInteger column = index % columns;
-        EagleArtwork *artwork = initialArtworks[index];
+        BOOL allColumnsFilled = YES;
+        for (NSNumber *y in nextY) {
+            if (y.doubleValue > fillBottomY) {
+                allColumnsFilled = NO;
+                break;
+            }
+        }
+        if (allColumnsFilled && self.cells.count >= columns) {
+            break;
+        }
+
+        EagleArtwork *artwork = initialArtworks[index % initialArtworks.count];
         CGFloat tileWidth = [self widthForColumn:column columns:columns baseWidth:baseTileWidth];
         CGFloat tileHeight = [self heightForArtwork:artwork width:tileWidth];
         CGFloat y = [nextY[column] doubleValue];
@@ -1231,42 +1230,10 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
         cell.phase = 1.0;
         [self createContentLayerForCell:cell];
         [self.cells addObject:cell];
-        [self prepareImageForCell:cell synchronously:(index < InitialSynchronousCells)];
+        [self prepareImageForCell:cell synchronously:[self shouldPrepareCellSynchronously:cell]];
         nextY[column] = @(NSMinY(cell.frame) - VerticalGap);
+        index += 1;
     }
-}
-
-- (void)prepareBackgroundLayer {
-    if (self.backgroundImageLayer.contents != nil || self.artworks.count == 0) {
-        return;
-    }
-    if (self.libraryIsNetworkVolume) {
-        return;
-    }
-
-    EagleArtwork *backgroundArtwork = nil;
-    for (EagleArtwork *artwork in self.artworks) {
-        if (!artwork.isVideo) {
-            backgroundArtwork = artwork;
-            break;
-        }
-    }
-    if (backgroundArtwork == nil) {
-        backgroundArtwork = self.artworks.firstObject;
-    }
-
-    NSImage *image = [self decodedImageForArtwork:backgroundArtwork maxPixelSize:ImageDecodeMaxPixelSize];
-    if (image == nil) {
-        return;
-    }
-    CGImageRef imageRef = [image CGImageForProposedRect:NULL context:nil hints:nil];
-    if (imageRef == NULL) {
-        return;
-    }
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    self.backgroundImageLayer.contents = (__bridge id)imageRef;
-    [CATransaction commit];
 }
 
 - (void)advanceWaterfallByDelta:(CGFloat)delta {
@@ -1306,11 +1273,9 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
         cell.artwork = next;
         cell.image = nil;
         cell.videoPlaybackFailed = NO;
-        cell.contentLayer.contents = nil;
-        cell.contentLayer.hidden = YES;
         [self updateLayerFrameForCell:cell];
         [visibleURLs addObject:next.url];
-        [self prepareImageForCell:cell];
+        [self prepareImageForCell:cell synchronously:YES];
     }
 }
 
@@ -1416,6 +1381,14 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
         found = YES;
     }
     return found ? leadingY : self.bounds.size.height;
+}
+
+- (BOOL)shouldPrepareCellSynchronously:(EagleCell *)cell {
+    if (cell == nil) {
+        return NO;
+    }
+    NSRect firstViewportBand = NSInsetRect(self.bounds, 0.0, -VerticalBleed);
+    return NSIntersectsRect(cell.frame, firstViewportBand);
 }
 
 - (CGFloat)heightForArtwork:(EagleArtwork *)artwork width:(CGFloat)width {
@@ -1637,9 +1610,15 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     player.volume = 0.0;
     player.automaticallyWaitsToMinimizeStalling = self.libraryIsNetworkVolume;
 
+    __weak typeof(self) weakSelf = self;
+    __weak EagleCell *weakCell = cell;
     id endObserver = [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification object:item queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification * _Nonnull note) {
-        [player seekToTime:kCMTimeZero];
-        [player play];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        EagleCell *strongCell = weakCell;
+        if (strongSelf == nil || strongCell == nil || strongCell.player.currentItem != item) {
+            return;
+        }
+        [strongSelf restartVideoForCell:strongCell];
     }];
 
     cell.player = player;
@@ -1647,6 +1626,7 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     cell.videoEndObserver = endObserver;
     cell.videoStartTime = CACurrentMediaTime();
     cell.videoLayerReady = NO;
+    cell.videoLoopRestartPending = NO;
     AVPlayerLayer *playerLayer = [AVPlayerLayer playerLayerWithPlayer:player];
     playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
     playerLayer.masksToBounds = YES;
@@ -1655,7 +1635,6 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     cell.playerLayer = playerLayer;
     [cell.contentLayer addSublayer:playerLayer];
 
-    __weak EagleCell *weakCell = cell;
     [item addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionNew context:(__bridge void *)weakCell];
     [player play];
 }
@@ -1702,6 +1681,7 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     cell.videoOutput = nil;
     cell.videoStartTime = 0.0;
     cell.videoLayerReady = NO;
+    cell.videoLoopRestartPending = NO;
 }
 
 - (void)clearVideoLayers {
@@ -1714,25 +1694,16 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
 }
 
 - (void)updateVideoLayers {
-    EagleCell *activeVideoCell = nil;
     for (EagleCell *cell in self.cells) {
         if (!cell.artwork.isVideo) {
             [self teardownVideoForCell:cell];
             continue;
         }
-        if (activeVideoCell == nil && NSIntersectsRect(cell.frame, self.bounds)) {
-            activeVideoCell = cell;
-        }
-    }
-
-    for (EagleCell *cell in self.cells) {
-        if (!cell.artwork.isVideo) {
-            continue;
-        }
-        if (cell == activeVideoCell) {
+        if (NSIntersectsRect(cell.frame, self.bounds)) {
             [self ensureVideoForCell:cell];
             if (cell.playerLayer != nil) {
                 cell.playerLayer.frame = cell.contentLayer.bounds;
+                [self keepVideoLoopingForCell:cell];
                 if ([self videoHasRenderableFrameForCell:cell]) {
                     cell.videoLayerReady = YES;
                     cell.playerLayer.hidden = NO;
@@ -1754,6 +1725,46 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     }
 }
 
+- (void)keepVideoLoopingForCell:(EagleCell *)cell {
+    AVPlayerItem *item = cell.player.currentItem;
+    if (item == nil || item.status != AVPlayerItemStatusReadyToPlay) {
+        return;
+    }
+
+    CMTime duration = item.duration;
+    if (!CMTIME_IS_NUMERIC(duration) || CMTimeCompare(duration, kCMTimeZero) <= 0) {
+        return;
+    }
+
+    CMTime currentTime = item.currentTime;
+    CMTime remaining = CMTimeSubtract(duration, currentTime);
+    if (CMTimeCompare(currentTime, duration) >= 0 ||
+        CMTimeCompare(remaining, CMTimeMakeWithSeconds(0.20, 600)) <= 0) {
+        [self restartVideoForCell:cell];
+    }
+}
+
+- (void)restartVideoForCell:(EagleCell *)cell {
+    if (cell.player == nil || cell.videoLoopRestartPending) {
+        return;
+    }
+
+    cell.videoLoopRestartPending = YES;
+    __weak EagleCell *weakCell = cell;
+    [cell.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero completionHandler:^(BOOL finished) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            EagleCell *strongCell = weakCell;
+            if (strongCell == nil) {
+                return;
+            }
+            strongCell.videoLoopRestartPending = NO;
+            if (finished && strongCell.player != nil) {
+                [strongCell.player play];
+            }
+        });
+    }];
+}
+
 - (BOOL)videoHasRenderableFrameForCell:(EagleCell *)cell {
     if (cell.videoOutput == nil || cell.player == nil) {
         return NO;
@@ -1769,42 +1780,8 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
         return cell.videoLayerReady;
     }
 
-    CGFloat brightness = [self averageBrightnessForPixelBuffer:pixelBuffer];
     CVPixelBufferRelease(pixelBuffer);
-    return brightness >= 0.025;
-}
-
-- (CGFloat)averageBrightnessForPixelBuffer:(CVPixelBufferRef)pixelBuffer {
-    if (CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
-        return 0.0;
-    }
-
-    const size_t width = CVPixelBufferGetWidth(pixelBuffer);
-    const size_t height = CVPixelBufferGetHeight(pixelBuffer);
-    const size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    const uint8_t *base = CVPixelBufferGetBaseAddress(pixelBuffer);
-    if (width == 0 || height == 0 || base == NULL) {
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        return 0.0;
-    }
-
-    const size_t samplesX = MIN((size_t)12, width);
-    const size_t samplesY = MIN((size_t)12, height);
-    double total = 0.0;
-    size_t count = 0;
-    for (size_t y = 0; y < samplesY; y++) {
-        size_t sampleY = (height * y + height / 2) / samplesY;
-        const uint8_t *row = base + sampleY * bytesPerRow;
-        for (size_t x = 0; x < samplesX; x++) {
-            size_t sampleX = (width * x + width / 2) / samplesX;
-            const uint8_t *pixel = row + sampleX * 4;
-            total += (0.0722 * pixel[0] + 0.7152 * pixel[1] + 0.2126 * pixel[2]) / 255.0;
-            count += 1;
-        }
-    }
-
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-    return count > 0 ? (CGFloat)(total / (double)count) : 0.0;
+    return YES;
 }
 
 - (CGRect)layerFrameForViewRect:(NSRect)viewRect {

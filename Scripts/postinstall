@@ -1,5 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
+setopt NULL_GLOB
 
 current_user="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
 if [[ -z "$current_user" || "$current_user" == "root" ]]; then
@@ -11,27 +12,64 @@ if [[ -z "$home_dir" || ! -d "$home_dir" ]]; then
   exit 0
 fi
 
-rm -rf "$home_dir/Library/Screen Savers/EagleGridSaver.saver"
-rm -rf "$home_dir/Applications/Eagle Grid Saver.app"
+user_preferences="$home_dir/Library/Preferences/com.chaopi.EagleGridSaver.plist"
+backup_preferences=""
+if [[ -f "$user_preferences" ]]; then
+  backup_preferences="$(mktemp "/tmp/EagleGridSaverPreferences.XXXXXX.plist")"
+  cp "$user_preferences" "$backup_preferences" 2>/dev/null || backup_preferences=""
+fi
+
+rm -rf "$home_dir/Library/Screen Savers/EagleGridSaver.saver" 2>/dev/null || true
+rm -rf "$home_dir/Applications/Eagle Grid Saver.app" 2>/dev/null || true
 
 containers_dir="$home_dir/Library/Containers"
 if [[ -d "$containers_dir" ]]; then
   for container in "$containers_dir"/com.apple.ScreenSaver.Engine* "$containers_dir"/*legacyScreenSaver*; do
     [[ -d "$container" ]] || continue
-    rm -rf "$container/Data/Library/Application Support/EagleGridSaver"
-    rm -f "$container/Data/Library/Preferences/com.chaopi.EagleGridSaver.plist"
-    rm -f "$container/Data/Library/Preferences/com.chaopi.EagleGridSaverApp.plist"
+    rm -rf "$container/Data/Library/Application Support/EagleGridSaver" 2>/dev/null || true
+    rm -f "$container/Data/Library/Preferences/com.chaopi.EagleGridSaver.plist" 2>/dev/null || true
+    rm -f "$container/Data/Library/Preferences/com.chaopi.EagleGridSaverApp.plist" 2>/dev/null || true
     rm -f "$container/Data/Library/Preferences/ByHost"/com.chaopi.EagleGridSaver*.plist 2>/dev/null || true
     rm -f "$container/Data/Library/Preferences/ByHost"/com.chaopi.EagleGridSaverApp*.plist 2>/dev/null || true
+  done
+  for container in \
+    "$containers_dir"/com.apple.ScreenSaver.Engine* \
+    "$containers_dir"/*legacyScreenSaver* \
+    "$containers_dir"/com.apple.ScreenSaver-Settings.extension \
+    "$containers_dir"/com.apple.settings-intents.ScreenSaverIntents \
+    "$containers_dir"/com.apple.settings-intents.WallpaperIntents \
+    "$containers_dir"/com.apple.wallpaper.agent.WallpaperIntents; do
+    [[ -d "$container" ]] || continue
+    if [[ -n "$backup_preferences" && -f "$backup_preferences" ]]; then
+      mkdir -p "$container/Data/Library/Preferences"
+      cp "$backup_preferences" "$container/Data/Library/Preferences/com.chaopi.EagleGridSaver.plist" 2>/dev/null || true
+      chown "$current_user":staff "$container/Data/Library/Preferences/com.chaopi.EagleGridSaver.plist" 2>/dev/null || true
+    fi
+    rm -rf "$container/Data/Library/Caches"/* 2>/dev/null || true
   done
 fi
 
 rm -f "$home_dir/Library/Preferences/ByHost"/com.chaopi.EagleGridSaver*.plist 2>/dev/null || true
 rm -f "$home_dir/Library/Preferences/ByHost"/com.chaopi.EagleGridSaverApp*.plist 2>/dev/null || true
+rm -rf "$home_dir/Library/Caches/com.apple.ScreenSaver"* 2>/dev/null || true
+rm -rf "$home_dir/Library/Caches/com.apple.wallpaper"* 2>/dev/null || true
+
+user_id="$(id -u "$current_user" 2>/dev/null || true)"
+if [[ -n "$user_id" && -d "/Library/Screen Savers/EagleGridSaver.saver" ]]; then
+  module_name="Eagle Grid Saver"
+  module_path="/Library/Screen Savers/EagleGridSaver.saver"
+  /bin/launchctl asuser "$user_id" /usr/bin/sudo -u "$current_user" \
+    -H /usr/bin/defaults write com.apple.screensaver moduleDict \
+    -dict moduleName "$module_name" path "$module_path" type -int 0 2>/dev/null || true
+  /bin/launchctl asuser "$user_id" /usr/bin/sudo -u "$current_user" \
+    -H /usr/bin/defaults -currentHost write com.apple.screensaver moduleDict \
+    -dict moduleName "$module_name" path "$module_path" type -int 0 2>/dev/null || true
+fi
 
 killall legacyScreenSaver 2>/dev/null || true
 killall ScreenSaverEngine 2>/dev/null || true
 killall WallpaperAgent 2>/dev/null || true
 killall cfprefsd 2>/dev/null || true
+[[ -n "$backup_preferences" ]] && rm -f "$backup_preferences" 2>/dev/null || true
 
 exit 0
