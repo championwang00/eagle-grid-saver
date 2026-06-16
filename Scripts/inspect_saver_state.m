@@ -62,10 +62,22 @@ int main(int argc, const char * argv[]) {
 
         NSArray *artworks = [view valueForKey:@"artworks"];
         NSArray *cells = [view valueForKey:@"cells"];
+        NSUInteger activeVideoPlayers = 0;
+        NSUInteger visibleVideoCells = 0;
         NSMutableSet *visibleColumns = NSMutableSet.set;
         for (id cell in cells) {
             [visibleColumns addObject:[cell valueForKey:@"column"]];
+            NSRect frame = [[cell valueForKey:@"frame"] rectValue];
+            BOOL isVideo = [[[cell valueForKey:@"artwork"] valueForKey:@"isVideo"] boolValue];
+            if (isVideo && NSMaxY(frame) >= 0.0 && NSMinY(frame) <= view.bounds.size.height) {
+                visibleVideoCells += 1;
+            }
+            if ([cell valueForKey:@"player"] != nil) {
+                activeVideoPlayers += 1;
+            }
         }
+        printf("visibleVideoCells=%lu\n", (unsigned long)visibleVideoCells);
+        printf("activeVideoPlayers=%lu\n", (unsigned long)activeVideoPlayers);
         printf("visibleCellColumns=%lu\n", (unsigned long)visibleColumns.count);
         for (NSNumber *column in visibleColumns) {
             CGFloat minY = CGFLOAT_MAX;

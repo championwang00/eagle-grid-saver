@@ -10,6 +10,7 @@ killall cfprefsd 2>/dev/null || true
 
 echo "Removing user-installed copies..."
 rm -rf "$HOME/Library/Screen Savers/EagleGridSaver.saver"
+rm -rf "$HOME/Library/Screen Savers"/EagleGridSaver.stale.*
 rm -rf "$HOME/Applications/Eagle Grid Saver.app"
 
 echo "Removing preferences and local display cache..."

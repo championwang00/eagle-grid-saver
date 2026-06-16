@@ -11,6 +11,7 @@ static NSString * const EagleLibraryBookmarkKey = @"EagleGridSaver.libraryBookma
 static NSString * const EagleDisplayCachePathKey = @"EagleGridSaver.displayCachePath";
 static NSString * const EagleScrollSpeedMultiplierKey = @"EagleGridSaver.scrollSpeedMultiplier";
 static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
+static NSString * const EagleLastPreparedAppVersionKey = @"EagleGridSaver.lastPreparedAppVersion";
 static NSString * const EagleDisplayCacheVersion = @"4";
 static NSString * const AppleScreenSaverDomain = @"com.apple.screensaver";
 static CGFloat const MinScrollSpeedMultiplier = 0.25;
@@ -29,6 +30,7 @@ static NSInteger const MaxColumnCount = 6;
 @property(nonatomic, strong) NSSlider *speedSlider;
 @property(nonatomic, strong) NSTextField *columnLabel;
 @property(nonatomic, strong) NSPopUpButton *columnPopUpButton;
+@property(nonatomic, strong) NSButton *chooseLibraryButton;
 @property(nonatomic, strong) NSButton *updateIndexButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSButton *startScreenSaverButton;
@@ -48,6 +50,7 @@ static NSInteger const MaxColumnCount = 6;
     self.indexQueue = dispatch_queue_create("com.chaopi.EagleGridSaver.indexQueue", DISPATCH_QUEUE_SERIAL);
     [self buildWindow];
     [self refreshPathLabel];
+    [self applyGuidedFlowState];
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
@@ -88,7 +91,7 @@ static NSInteger const MaxColumnCount = 6;
     description.maximumNumberOfLines = 2;
     [content addSubview:description];
 
-    self.setupLabel = [self labelWithString:@"Required before use: click Settings, set Use screen saver to Custom, then click Eagle Grid Saver in macOS System Settings. Until that manual selection is done, Start Screen Saver may still launch Tahoe or another Apple screen saver." font:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold] color:NSColor.systemOrangeColor];
+    self.setupLabel = [self labelWithString:@"Step 1: choose an Eagle library. The app will build the index before the screen saver can start." font:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold] color:NSColor.systemOrangeColor];
     self.setupLabel.frame = NSMakeRect(32, 314, 556, 54);
     self.setupLabel.maximumNumberOfLines = 3;
     [content addSubview:self.setupLabel];
@@ -125,10 +128,10 @@ static NSInteger const MaxColumnCount = 6;
     self.columnPopUpButton.action = @selector(columnCountChanged:);
     [content addSubview:self.columnPopUpButton];
 
-    NSButton *chooseButton = [NSButton buttonWithTitle:@"Choose Eagle Library..." target:self action:@selector(chooseLibrary:)];
-    chooseButton.frame = NSMakeRect(32, 118, 172, 34);
-    chooseButton.bezelStyle = NSBezelStyleRounded;
-    [content addSubview:chooseButton];
+    self.chooseLibraryButton = [NSButton buttonWithTitle:@"Choose Eagle Library..." target:self action:@selector(chooseLibrary:)];
+    self.chooseLibraryButton.frame = NSMakeRect(32, 118, 172, 34);
+    self.chooseLibraryButton.bezelStyle = NSBezelStyleRounded;
+    [content addSubview:self.chooseLibraryButton];
 
     self.updateIndexButton = [NSButton buttonWithTitle:@"Update Index" target:self action:@selector(updateIndex:)];
     self.updateIndexButton.frame = NSMakeRect(216, 118, 116, 34);
@@ -161,6 +164,7 @@ static NSInteger const MaxColumnCount = 6;
     [content addSubview:self.statusLabel];
     [self refreshSpeedControls];
     [self refreshColumnControls];
+    [self applyGuidedFlowState];
 }
 
 - (NSTextField *)labelWithString:(NSString *)string font:(NSFont *)font color:(NSColor *)color {
@@ -232,6 +236,7 @@ static NSInteger const MaxColumnCount = 6;
     NSURL *libraryURL = [self configuredLibraryURL];
     if (libraryURL == nil) {
         self.statusLabel.stringValue = @"Choose an Eagle library first.";
+        [self applyGuidedFlowState];
         return;
     }
     [self prepareIndexForLibrary:libraryURL];
@@ -283,6 +288,11 @@ static NSInteger const MaxColumnCount = 6;
 - (void)startScreenSaver:(id)sender {
     if (self.isPreparingIndex) {
         self.statusLabel.stringValue = @"Index is still building. Please wait before starting the screen saver.";
+        return;
+    }
+    if (![self hasUsableDisplayCacheForCurrentLibrary]) {
+        self.statusLabel.stringValue = @"Update Index first. The screen saver is disabled until the current library has a fresh index.";
+        [self applyGuidedFlowState];
         return;
     }
     if (![self screenSaverPreferencesPointAtEagleGridSaver]) {
@@ -409,7 +419,9 @@ static NSInteger const MaxColumnCount = 6;
             NSDictionary *summary = [self displayCacheSummary];
             NSNumber *count = summary[@"count"];
             NSNumber *videos = summary[@"videos"];
-            if (count != nil && count.unsignedIntegerValue > 0) {
+            if ([self needsIndexAfterVersionChange]) {
+                self.statusLabel.stringValue = @"New version installed. Click Update Index before starting the screen saver.";
+            } else if (count != nil && count.unsignedIntegerValue > 0 && [self displayCacheMatchesLibraryPath:path]) {
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"Ready. Index has %lu items (%lu videos). Cache: %@",
                                                 (unsigned long)count.unsignedIntegerValue,
                                                 (unsigned long)videos.unsignedIntegerValue,
@@ -423,6 +435,7 @@ static NSInteger const MaxColumnCount = 6;
         self.pathLabel.stringValue = @"No Eagle library selected";
         self.statusLabel.stringValue = @"Choose an Eagle library to prepare the display cache.";
     }
+    [self applyGuidedFlowState];
 }
 
 - (NSDictionary *)displayCacheSummary {
@@ -446,10 +459,93 @@ static NSInteger const MaxColumnCount = 6;
     }
 
     return @{
+        @"version": [manifest[@"version"] isKindOfClass:NSString.class] ? manifest[@"version"] : @"",
         @"count": @(items.count),
         @"videos": @(videoCount),
         @"libraryPath": [manifest[@"libraryPath"] isKindOfClass:NSString.class] ? manifest[@"libraryPath"] : @""
     };
+}
+
+- (BOOL)hasUsableDisplayCacheForCurrentLibrary {
+    NSURL *libraryURL = [self configuredLibraryURL];
+    if (libraryURL.path.length == 0 || [self needsIndexAfterVersionChange]) {
+        return NO;
+    }
+
+    NSDictionary *summary = [self displayCacheSummary];
+    NSNumber *count = summary[@"count"];
+    return count.unsignedIntegerValue > 0 && [self displayCacheMatchesLibraryPath:libraryURL.path];
+}
+
+- (BOOL)displayCacheMatchesLibraryPath:(NSString *)libraryPath {
+    if (libraryPath.length == 0) {
+        return NO;
+    }
+
+    NSDictionary *summary = [self displayCacheSummary];
+    NSString *version = [summary[@"version"] isKindOfClass:NSString.class] ? summary[@"version"] : @"";
+    NSString *cachedLibraryPath = [summary[@"libraryPath"] isKindOfClass:NSString.class] ? summary[@"libraryPath"] : @"";
+    return [version isEqualToString:EagleDisplayCacheVersion] && [cachedLibraryPath isEqualToString:libraryPath];
+}
+
+- (BOOL)needsIndexAfterVersionChange {
+    NSURL *libraryURL = [self configuredLibraryURL];
+    if (libraryURL.path.length == 0) {
+        return NO;
+    }
+
+    NSDictionary *summary = [self displayCacheSummary];
+    NSNumber *count = summary[@"count"];
+    if (count.unsignedIntegerValue == 0 || ![self displayCacheMatchesLibraryPath:libraryURL.path]) {
+        return YES;
+    }
+
+    NSString *preparedVersion = [self lastPreparedAppVersion];
+    return preparedVersion.length == 0 || ![preparedVersion isEqualToString:[self currentAppVersionToken]];
+}
+
+- (void)applyGuidedFlowState {
+    if (self.chooseLibraryButton == nil || self.updateIndexButton == nil || self.startScreenSaverButton == nil) {
+        return;
+    }
+
+    BOOL hasLibrary = self.configuredLibraryURL.path.length > 0;
+    BOOL indexReady = [self hasUsableDisplayCacheForCurrentLibrary];
+    BOOL indexing = self.isPreparingIndex;
+
+    self.chooseLibraryButton.hidden = indexing ? YES : NO;
+    self.chooseLibraryButton.enabled = !indexing;
+    self.updateIndexButton.hidden = !hasLibrary || indexReady;
+    self.updateIndexButton.enabled = hasLibrary && !indexReady && !indexing;
+    self.settingsButton.hidden = !indexReady;
+    self.settingsButton.enabled = indexReady && !indexing;
+    self.startScreenSaverButton.hidden = !indexReady;
+    self.startScreenSaverButton.enabled = indexReady && !indexing;
+    [self setAdvancedControlsHidden:!indexReady];
+    [self updateSetupGuidanceWithLibraryReady:hasLibrary indexReady:indexReady indexing:indexing];
+}
+
+- (void)setAdvancedControlsHidden:(BOOL)hidden {
+    self.speedLabel.hidden = hidden;
+    self.speedSlider.hidden = hidden;
+    self.columnLabel.hidden = hidden;
+    self.columnPopUpButton.hidden = hidden;
+}
+
+- (void)updateSetupGuidanceWithLibraryReady:(BOOL)hasLibrary indexReady:(BOOL)indexReady indexing:(BOOL)indexing {
+    if (self.setupLabel == nil) {
+        return;
+    }
+
+    if (indexing) {
+        self.setupLabel.stringValue = @"Step 2: building the display index. Keep this window open until it finishes.";
+    } else if (!hasLibrary) {
+        self.setupLabel.stringValue = @"Step 1: choose an Eagle library. Other controls stay hidden until the library and index are ready.";
+    } else if (!indexReady) {
+        self.setupLabel.stringValue = @"Step 2: click Update Index. This refreshes the real screen saver cache after a new install or update.";
+    } else {
+        self.setupLabel.stringValue = @"Step 3: click Settings, set Use screen saver to Custom, then choose Eagle Grid Saver in macOS System Settings.";
+    }
 }
 
 - (CGFloat)scrollSpeedMultiplier {
@@ -804,6 +900,7 @@ static NSInteger const MaxColumnCount = 6;
     self.progressIndicator.hidden = NO;
     self.progressIndicator.doubleValue = 0;
     self.statusLabel.stringValue = @"Building index. Please wait...";
+    [self applyGuidedFlowState];
     [self restartScreenSaverHostProcesses];
 
     __weak typeof(self) weakSelf = self;
@@ -834,8 +931,11 @@ static NSInteger const MaxColumnCount = 6;
             }
             if (prepared) {
                 innerSelf.progressIndicator.doubleValue = 1;
+                [innerSelf saveLastPreparedAppVersion];
             }
             innerSelf.progressIndicator.hidden = YES;
+            [innerSelf refreshPathLabel];
+            [innerSelf applyGuidedFlowState];
         });
     });
 }
@@ -982,6 +1082,7 @@ static NSInteger const MaxColumnCount = 6;
         return NO;
     }
     [self writeRuntimeConfigWithSpeedMultiplier:speedMultiplier];
+    [self saveLastPreparedAppVersion];
 
     NSUInteger mirroredContainerCount = 0;
     for (NSURL *containerRootURL in [self screenSaverContainerRootURLs]) {
@@ -1020,6 +1121,50 @@ static NSInteger const MaxColumnCount = 6;
                                         mirroredContainerCount == 1 ? @"" : @"s"];
     });
     return succeeded > 0;
+}
+
+- (NSString *)currentAppVersionToken {
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    NSString *version = [info[@"CFBundleShortVersionString"] isKindOfClass:NSString.class] ? info[@"CFBundleShortVersionString"] : @"?";
+    NSString *build = [info[@"CFBundleVersion"] isKindOfClass:NSString.class] ? info[@"CFBundleVersion"] : @"?";
+    return [NSString stringWithFormat:@"%@ (%@)", version, build];
+}
+
+- (NSString *)lastPreparedAppVersion {
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain],
+        [[NSUserDefaults alloc] initWithSuiteName:EagleDefaultsDomain]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        NSString *value = [defaults stringForKey:EagleLastPreparedAppVersionKey];
+        if (value.length > 0) {
+            return value;
+        }
+    }
+
+    NSString *domainValue = CFBridgingRelease(CFPreferencesCopyAppValue((CFStringRef)EagleLastPreparedAppVersionKey, (CFStringRef)EagleDefaultsDomain));
+    return [domainValue isKindOfClass:NSString.class] ? domainValue : @"";
+}
+
+- (void)saveLastPreparedAppVersion {
+    NSString *version = [self currentAppVersionToken];
+    NSArray<NSUserDefaults *> *defaultsList = @[
+        NSUserDefaults.standardUserDefaults,
+        [ScreenSaverDefaults defaultsForModuleWithName:EagleDefaultsDomain],
+        [[NSUserDefaults alloc] initWithSuiteName:EagleDefaultsDomain]
+    ];
+
+    for (NSUserDefaults *defaults in defaultsList) {
+        [defaults setObject:version forKey:EagleLastPreparedAppVersionKey];
+        [defaults synchronize];
+    }
+
+    CFPreferencesSetAppValue((CFStringRef)EagleLastPreparedAppVersionKey, (__bridge CFStringRef)version, (CFStringRef)EagleDefaultsDomain);
+    CFPreferencesAppSynchronize((CFStringRef)EagleDefaultsDomain);
+    [self saveCurrentHostPreferenceValue:version forKey:EagleLastPreparedAppVersionKey];
+    [self saveContainerPreferenceValue:version forKey:EagleLastPreparedAppVersionKey];
 }
 
 - (void)persistRuntimeSelectionForLibraryURL:(NSURL *)libraryURL

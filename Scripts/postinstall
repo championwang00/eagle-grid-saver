@@ -20,6 +20,7 @@ if [[ -f "$user_preferences" ]]; then
 fi
 
 rm -rf "$home_dir/Library/Screen Savers/EagleGridSaver.saver" 2>/dev/null || true
+rm -rf "$home_dir/Library/Screen Savers"/EagleGridSaver.stale.* 2>/dev/null || true
 rm -rf "$home_dir/Applications/Eagle Grid Saver.app" 2>/dev/null || true
 
 containers_dir="$home_dir/Library/Containers"
