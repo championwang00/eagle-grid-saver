@@ -6,7 +6,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from PIL import Image
+import struct
+import zlib
 
 
 def run(cmd, cwd):
@@ -33,6 +34,82 @@ def write_ppm(path, color):
     with open(path, "wb") as f:
         f.write(f"P6\n{w} {h}\n255\n".encode())
         f.write(bytes([r, g, b]) * w * h)
+
+
+def read_png_rgb(path):
+    data = pathlib.Path(path).read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise SystemExit(f"{path} is not a PNG")
+
+    offset = 8
+    width = height = color_type = bit_depth = None
+    compressed = bytearray()
+    while offset < len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        chunk_type = data[offset + 4:offset + 8]
+        chunk_data = data[offset + 8:offset + 8 + length]
+        offset += 12 + length
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type, _compression, _filter, _interlace = struct.unpack(">IIBBBBB", chunk_data)
+            if bit_depth != 8 or color_type not in (2, 6):
+                raise SystemExit(f"unsupported PNG format bitDepth={bit_depth} colorType={color_type}")
+        elif chunk_type == b"IDAT":
+            compressed.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+
+    if width is None or height is None:
+        raise SystemExit("missing PNG header")
+
+    channels = 4 if color_type == 6 else 3
+    stride = width * channels
+    raw = zlib.decompress(bytes(compressed))
+    rows = []
+    previous = [0] * stride
+    cursor = 0
+    for _y in range(height):
+        filter_type = raw[cursor]
+        cursor += 1
+        row = list(raw[cursor:cursor + stride])
+        cursor += stride
+        recon = [0] * stride
+        for index, value in enumerate(row):
+            left = recon[index - channels] if index >= channels else 0
+            up = previous[index]
+            up_left = previous[index - channels] if index >= channels else 0
+            if filter_type == 0:
+                predicted = 0
+            elif filter_type == 1:
+                predicted = left
+            elif filter_type == 2:
+                predicted = up
+            elif filter_type == 3:
+                predicted = (left + up) // 2
+            elif filter_type == 4:
+                p = left + up - up_left
+                pa = abs(p - left)
+                pb = abs(p - up)
+                pc = abs(p - up_left)
+                predicted = left if pa <= pb and pa <= pc else up if pb <= pc else up_left
+            else:
+                raise SystemExit(f"unsupported PNG filter {filter_type}")
+            recon[index] = (value + predicted) & 0xFF
+        rows.append(recon)
+        previous = recon
+    return width, height, channels, rows
+
+
+def black_pixel_ratio(path):
+    width, height, channels, rows = read_png_rgb(path)
+    black = 0
+    total = width * height
+    for row in rows:
+        for x in range(width):
+            index = x * channels
+            r, g, b = row[index], row[index + 1], row[index + 2]
+            if r < 6 and g < 6 and b < 6:
+                black += 1
+    return black / total
 
 
 def main():
@@ -115,22 +192,14 @@ def main():
         output_png = project / "outputs/verify-no-black-tiles.png"
         output_png.parent.mkdir(exist_ok=True)
         run(["clang", "-fobjc-arc", "-framework", "Cocoa", "-framework", "QuartzCore", "-framework", "ScreenSaver", "Scripts/render_preview.m", "-o", "dist/render_preview"], project)
-        run(["dist/render_preview", "dist/EagleGridSaver.saver", str(output_png), "80"], project)
-
-        img = Image.open(output_png).convert("RGB")
-        w, h = img.size
-        pixels = img.load()
-        black = 0
-        total = w * h
-        for y in range(h):
-            for x in range(w):
-                r, g, b = pixels[x, y]
-                if r < 6 and g < 6 and b < 6:
-                    black += 1
-        ratio = black / total
-        print(f"black_pixel_ratio={ratio:.6f}")
-        print(f"output={output_png}")
-        if ratio > 0.01:
+        ratios = []
+        for frames in (80, 420, 900):
+            frame_png = output_png.with_name(f"{output_png.stem}-{frames}.png")
+            run(["dist/render_preview", "dist/EagleGridSaver.saver", str(frame_png), str(frames)], project)
+            ratio = black_pixel_ratio(frame_png)
+            ratios.append(ratio)
+            print(f"frames={frames} black_pixel_ratio={ratio:.6f} output={frame_png}")
+        if max(ratios) > 0.01:
             raise SystemExit("black tile check failed")
     finally:
         restore_defaults(project, defaults_backup)

@@ -11,7 +11,11 @@ def main():
     required_symbols = [
         "MaxActiveVideoPlayers",
         "ImageCacheTotalCostLimit",
+        "MinDynamicDecodePixelSize",
+        "MaxDynamicDecodePixelSize",
         "maxVisibleCellsForCurrentLayout",
+        "decodeMaxPixelSizeForCell",
+        "clearLayerImageForCell",
         "cacheCostForImage",
         "removeAllObjects",
     ]
@@ -40,6 +44,20 @@ def main():
 
     if "self.imageCache.totalCostLimit" not in text:
         raise SystemExit("image cache total cost limit is not configured")
+
+    cache_limit_match = re.search(r"ImageCacheTotalCostLimit\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024", text)
+    if cache_limit_match is None or int(cache_limit_match.group(1)) > 96:
+        raise SystemExit("image cache total cost limit must be <= 96 MB")
+
+    max_decode_match = re.search(r"MaxDynamicDecodePixelSize\s*=\s*(\d+)\.0", text)
+    if max_decode_match is None or int(max_decode_match.group(1)) > 900:
+        raise SystemExit("dynamic decode max pixel size must be <= 900")
+
+    if "decodedImageForArtwork:cell.artwork maxPixelSize:[self decodeMaxPixelSizeForCell:cell]" not in text:
+        raise SystemExit("cell image decode must use the cell-specific pixel cap")
+
+    if "cell.contentLayer.contents = nil" not in text:
+        raise SystemExit("reused cells must clear old layer contents")
 
     if "maxVisibleCells = [self maxVisibleCellsForCurrentLayoutWithColumns:columns" not in text:
         raise SystemExit("layout still uses a fixed global cell cap")

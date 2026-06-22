@@ -65,7 +65,7 @@
 
 static NSInteger const AbsoluteMaxVisibleCells = 160;
 static NSInteger const MaxActiveVideoPlayers = 2;
-static NSUInteger const ImageCacheTotalCostLimit = 220 * 1024 * 1024;
+static NSUInteger const ImageCacheTotalCostLimit = 80 * 1024 * 1024;
 static NSInteger const InitialSynchronousCells = 4;
 static NSInteger const NetworkScanAssetLimit = 160;
 static CGFloat const HorizontalGap = 0.0;
@@ -78,8 +78,9 @@ static NSInteger const MinColumnCount = 1;
 static NSInteger const MaxColumnCount = 6;
 static CGFloat const TileCornerRadius = 0.0;
 static CGFloat const TargetFrameRate = 60.0;
-static CGFloat const ImageDecodeMaxPixelSize = 1100.0;
-static CGFloat const VideoPosterMaxPixelSize = 900.0;
+static CGFloat const MinDynamicDecodePixelSize = 280.0;
+static CGFloat const MaxDynamicDecodePixelSize = 850.0;
+static CGFloat const VideoPosterMaxPixelSize = 720.0;
 static CGFloat const VideoStartupTimeout = 3.0;
 static BOOL const EnableSyntheticGapTest = NO;
 static CGFloat const HorizontalBleed = 0.0;
@@ -810,11 +811,19 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
             continue;
         }
 
+        CGSize displaySize = [self imageSizeForURL:url];
+        if (displaySize.width <= 1.0 || displaySize.height <= 1.0) {
+            NSLog(@"EagleGridSaver: skipped unreadable display cache image %@", url.path);
+            continue;
+        }
+
         EagleArtwork *artwork = EagleArtwork.new;
         artwork.url = url;
         artwork.title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : url.URLByDeletingPathExtension.lastPathComponent;
-        artwork.width = MAX(1.0, [item[@"width"] doubleValue]);
-        artwork.height = MAX(1.0, [item[@"height"] doubleValue]);
+        CGFloat itemWidth = [item[@"width"] doubleValue];
+        CGFloat itemHeight = [item[@"height"] doubleValue];
+        artwork.width = itemWidth > 1.0 ? itemWidth : displaySize.width;
+        artwork.height = itemHeight > 1.0 ? itemHeight : displaySize.height;
         artwork.isVideo = [item[@"isVideo"] boolValue];
         artwork.usesPreparedDisplayImage = YES;
         NSString *sourcePath = [item[@"sourcePath"] isKindOfClass:NSString.class] ? item[@"sourcePath"] : nil;
@@ -822,6 +831,9 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
             artwork.videoURL = [self remappedSourceURLForPath:sourcePath
                                             cachedLibraryPath:cachedLibraryPath
                                           currentLibraryPaths:currentLibraryPaths];
+            if (artwork.videoURL != nil && ![NSFileManager.defaultManager fileExistsAtPath:artwork.videoURL.path]) {
+                artwork.videoURL = nil;
+            }
         }
         [cached addObject:artwork];
     }
@@ -1338,6 +1350,18 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     [CATransaction commit];
 }
 
+- (void)clearLayerImageForCell:(EagleCell *)cell {
+    if (cell.contentLayer == nil) {
+        return;
+    }
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    cell.contentLayer.contents = nil;
+    cell.contentLayer.hidden = YES;
+    [CATransaction commit];
+}
+
 - (BOOL)drawFallbackCell:(EagleCell *)cell {
     NSImage *image = [self.imageCache objectForKey:cell.artwork.url];
     if (image == nil) {
@@ -1449,7 +1473,7 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     }
 
     if (synchronously) {
-        NSImage *image = [self decodedImageForArtwork:cell.artwork maxPixelSize:ImageDecodeMaxPixelSize];
+        NSImage *image = [self decodedImageForArtwork:cell.artwork maxPixelSize:[self decodeMaxPixelSizeForCell:cell]];
         if (image != nil) {
             [self.imageCache setObject:image forKey:cell.artwork.url cost:[self cacheCostForImage:image]];
             [self setLayerImage:image forCell:cell];
@@ -1466,6 +1490,7 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     }
 
     EagleArtwork *artwork = cell.artwork;
+    CGFloat maxPixelSize = [self decodeMaxPixelSizeForCell:cell];
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.imageQueue, ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -1473,7 +1498,7 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
             return;
         }
 
-        NSImage *image = [strongSelf decodedImageForArtwork:artwork maxPixelSize:ImageDecodeMaxPixelSize];
+        NSImage *image = [strongSelf decodedImageForArtwork:artwork maxPixelSize:maxPixelSize];
 
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) innerSelf = weakSelf;
@@ -1498,6 +1523,16 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
             }
         });
     });
+}
+
+- (CGFloat)decodeMaxPixelSizeForCell:(EagleCell *)cell {
+    return [self decodeMaxPixelSizeForFrame:cell.frame];
+}
+
+- (CGFloat)decodeMaxPixelSizeForFrame:(NSRect)frame {
+    CGFloat scale = MAX(1.0, NSScreen.mainScreen.backingScaleFactor);
+    CGFloat target = MAX(frame.size.width, frame.size.height) * scale * 1.15;
+    return MIN(MaxDynamicDecodePixelSize, MAX(MinDynamicDecodePixelSize, ceil(target)));
 }
 
 - (NSUInteger)cacheCostForImage:(NSImage *)image {
@@ -1608,7 +1643,10 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
 }
 
 - (void)ensureVideoForCell:(EagleCell *)cell {
-    if (cell.artwork.videoURL == nil || cell.videoPlaybackFailed || !cell.hasPreparedImage) {
+    if (cell.artwork.videoURL == nil ||
+        cell.videoPlaybackFailed ||
+        !cell.hasPreparedImage ||
+        ![NSFileManager.defaultManager fileExistsAtPath:cell.artwork.videoURL.path]) {
         [self teardownVideoForCell:cell];
         return;
     }
@@ -1710,6 +1748,7 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
 - (void)clearVideoLayers {
     for (EagleCell *cell in self.cells) {
         [self teardownVideoForCell:cell];
+        [self clearLayerImageForCell:cell];
         [cell.contentLayer removeFromSuperlayer];
         cell.contentLayer = nil;
     }
@@ -1811,6 +1850,8 @@ static NSString * const EagleColumnCountKey = @"EagleGridSaver.columnCount";
     }
 
     cell.videoLoopRestartPending = YES;
+    cell.videoLayerReady = NO;
+    cell.playerLayer.hidden = YES;
     __weak EagleCell *weakCell = cell;
     [cell.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero completionHandler:^(BOOL finished) {
         dispatch_async(dispatch_get_main_queue(), ^{
