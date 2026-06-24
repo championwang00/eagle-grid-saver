@@ -6,20 +6,20 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>EagleGridSaverApp</string>
+	<key>CFBundleIconFile</key>
+	<string>EagleGridSaver</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.chaopi.EagleGridSaverApp</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
-	<key>CFBundleIconFile</key>
-	<string>EagleGridSaver</string>
 	<key>CFBundleName</key>
 	<string>Eagle Grid Saver</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.12</string>
+	<string>0.9.15</string>
 	<key>CFBundleVersion</key>
-	<string>102</string>
+	<string>105</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHumanReadableCopyright</key>

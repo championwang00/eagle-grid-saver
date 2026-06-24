@@ -5,7 +5,7 @@
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         if (argc < 3) {
-            fprintf(stderr, "usage: render_preview <saver-path> <output-png>\n");
+            fprintf(stderr, "usage: render_preview <saver-path> <output-png> [frames] [preview|full] [width] [height]\n");
             return 2;
         }
 
@@ -23,7 +23,9 @@ int main(int argc, const char * argv[]) {
             return 1;
         }
 
-        NSRect frame = NSMakeRect(0, 0, 1440, 900);
+        CGFloat width = argc >= 6 ? [[NSString stringWithUTF8String:argv[5]] doubleValue] : 1440.0;
+        CGFloat height = argc >= 7 ? [[NSString stringWithUTF8String:argv[6]] doubleValue] : 900.0;
+        NSRect frame = NSMakeRect(0, 0, MAX(100.0, width), MAX(100.0, height));
         BOOL isPreview = argc < 5 || strcmp(argv[4], "full") != 0;
         ScreenSaverView *view = [[principalClass alloc] initWithFrame:frame isPreview:isPreview];
         if (view == nil) {
@@ -36,8 +38,9 @@ int main(int argc, const char * argv[]) {
         NSInteger frameCount = argc >= 4 ? [[NSString stringWithUTF8String:argv[3]] integerValue] : 24;
         for (NSInteger i = 0; i < frameCount; i++) {
             [view animateOneFrame];
-            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1.0 / 60.0]];
         }
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
         [view setNeedsDisplay:YES];
 
         NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]

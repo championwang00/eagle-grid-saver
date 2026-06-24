@@ -6,23 +6,23 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>EagleGridSaver</string>
+	<key>CFBundleIconFile</key>
+	<string>EagleGridSaver</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.chaopi.EagleGridSaver</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
-	<key>CFBundleIconFile</key>
-	<string>EagleGridSaver</string>
 	<key>CFBundleName</key>
 	<string>Eagle Grid Saver</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.12</string>
+	<string>0.9.15</string>
 	<key>CFBundleVersion</key>
-	<string>102</string>
-	<key>NSPrincipalClass</key>
-	<string>EagleGridSaverView</string>
+	<string>105</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSPrincipalClass</key>
+	<string>EagleGridSaverView</string>
 </dict>
 </plist>

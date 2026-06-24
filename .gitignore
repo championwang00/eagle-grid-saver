@@ -4,6 +4,8 @@ dist/
 outputs/
 DerivedData/
 *.xcuserstate
+__pycache__/
+*.pyc
 
 # Generated iconset intermediates
 AppResources/Icon.iconset/
